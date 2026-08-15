@@ -1,12 +1,12 @@
 ---
 name: panel-rust-analysis
 description: "Full pipeline for corrosion/rust test panel photos: straighten each panel, orient the mounting hole to the top, classify rust pixels, generate red rust-overlay images, and assemble everything into a PowerPoint deck. Use this whenever the user uploads transparent-background (RGBA, pre-background-removed) panel photos -- each containing 1-3 panels side by side -- and asks to run the 'usual' analysis, 'panel straighten and rust analysis', 'do it the same as before', or similar. Also use for follow-up requests on an existing batch: reorienting panels, adjusting the rust-classification threshold, building a diagnostic overlay to sanity-check the % against a visual impression, or re-running with a different classifier. If the input images still have their original background (not yet transparent), use the panel-bg-removal skill first."
-skill_version: "2.3"
+skill_version: "2.4"
 ---
 
 ## VERSION CHECK -- do this before anything else in this skill
 
-This SKILL.md declares `skill_version: "2.3"` above. **Before running any
+This SKILL.md declares `skill_version: "2.4"` above. **Before running any
 workflow in this skill, compare that version string against what's on
 record in memory** (the person's memory edits / prior conversation
 context should have a line like "panel-rust-analysis skill version:
@@ -157,19 +157,29 @@ itself governs if this ever looks inconsistent with it):
   something to silently reintroduce because it seems friendlier to skim.
 - **Grouped slides** (all sets as columns on one slide -- one for
   straightened, one per overlay method in use -- now the deck's only
-  panel-image content): a **fixed** column grid, not dynamic per-slide
-  scaling -- `IMG_H = 1.6in`, `IMG_W` from the first straightened image's
-  aspect ratio, `COL_GAP = 0.35in`, `ROW_GAP = 0.08in` between panel rows
-  within a column, centered as a block (`X0`). These exact values were
-  reverse-engineered from a reference deck's raw XML (EMU values) in a
-  past session -- if they ever look wrong again, re-verify against actual
-  deck XML, not by eyeballing a render. Set ID as a bold 15pt header above
-  each column. Panels stacked within each column: straightened captions
-  ("Panel N") at **9.5pt** GRAY; overlay captions ("Panel N — XX.X%") at
-  **8pt** RED bold -- deliberately smaller so the longer string still fits
-  on one line within the narrow column width; don't bump either back up
-  without re-checking the fit on a real render. A thin vertical divider
-  line between adjacent set columns.
+  panel-image content): a **fixed row height**, `IMG_H = 1.6in`, shared by
+  every column, but **`IMG_W` is computed PER COLUMN from that set's own
+  straightened-panel aspect ratio** (fixed at skill_version 2.4 -- a
+  single shared width computed only from the first set was silently
+  stretching/squeezing any column whose panels had a different native
+  aspect ratio than set 1, e.g. square coupons mixed with rectangular
+  Q-panels in the same batch; confirmed on a real batch with genuinely
+  square 3x3in panels rendering visibly distorted). `COL_GAP = 0.35in`,
+  `ROW_GAP = 0.08in` between panel rows within a column, whole grid
+  centered as a block (`X0`) using the summed per-column widths. `IMG_H`
+  and the gap constants were reverse-engineered from a reference deck's
+  raw XML (EMU values) in a past session -- if they ever look wrong again,
+  re-verify against actual deck XML, not by eyeballing a render. Chunking
+  across multiple grouped slides (`chunkForWidth`) also accounts for
+  per-column width now, greedily packing columns until the next one
+  wouldn't fit, rather than assuming a uniform column count fits per
+  slide. Set ID as a bold 15pt header above each column. Panels stacked
+  within each column: straightened captions ("Panel N") at **9.5pt**
+  GRAY; overlay captions ("Panel N — XX.X%") at **8pt** RED bold --
+  deliberately smaller so the longer string still fits on one line within
+  the narrow column width; don't bump either back up without re-checking
+  the fit on a real render. A thin vertical divider line between adjacent
+  set columns.
   - **Optional description row**: a short italic 6pt line (DARK color)
     under each set's column header (e.g. a formulation summary), via the
     `DESCRIPTIONS` map keyed by set label. **Never invent or infer this
@@ -344,6 +354,24 @@ it's not in the current session. If versions differ, note it and consider
 reprocessing one side with the other's classifier for a clean comparison.
 
 ## History / rationale (context if asked, not required reading to run this)
+
+- **Grouped-slide column-width fix at skill_version 2.4**: the fixed
+  column grid computed a single `IMG_W` from set 1's straightened-panel
+  aspect ratio and applied it to every column. This silently distorted
+  any set whose panels had a different native aspect ratio -- caught on
+  an AN26_0703 5C-5J batch where sets 5G/5H were genuinely square (1.0
+  aspect, physical 3x3in) while every other set was ~0.6 aspect
+  (rectangular, ~3x5in): 5G/5H were being horizontally squeezed to about
+  60% of their correct width. Confirmed via direct pixel-dimension check
+  (`PIL.Image.size`) rather than assuming from a description. Fixed by
+  computing `IMG_W` independently per column from that column's own
+  first straightened image, keeping `IMG_H` fixed across all columns for
+  row alignment. `chunkForWidth` (which splits a batch across multiple
+  grouped slides if too many columns would overflow) was updated
+  correspondingly to greedily pack columns by their own width rather than
+  assuming a uniform column count fits per slide. This is a general
+  template fix, not a batch-specific patch -- any future batch mixing
+  panel shapes (square coupons, rectangular Q-panels, etc.) benefits.
 
 - **Second condensation false-positive fix at skill_version 2.3**: the
   2.0 fix (hue-constraining Stage 1's dark-residual candidates) genuinely

@@ -1,5 +1,5 @@
 /*
- * panel-rust-analysis skill_version: 2.3 -- must match SKILL.md's
+ * panel-rust-analysis skill_version: 2.4 -- must match SKILL.md's
  * skill_version and the version recorded in memory. If this number looks
  * out of sync with either, this file has likely reverted to a stale
  * snapshot -- see SKILL.md's persistence-warning section before trusting
@@ -130,15 +130,31 @@ function buildGroupedSlide(title, sets, kind) {
   slide.background = { color: "FFFFFF" };
   addTitle(slide, title);
 
-  const N_COLS = sets.length;
-  const firstStraight = `${sets[0]}_t_${TIMEPOINT}/panel1_straight.png`;
-  const IMG_W = IMG_H * (sizeOf(firstStraight).width / sizeOf(firstStraight).height);
-  const GRID_W = N_COLS * IMG_W + (N_COLS - 1) * COL_GAP;
+  // Column width is computed PER SET from that set's own straightened-panel
+  // aspect ratio, not from a single shared width -- panels are not all the
+  // same shape (e.g. square coupons vs rectangular Q-panels can appear in
+  // the same batch). IMG_H stays fixed across all columns for row
+  // alignment; IMG_W varies per column so every panel keeps its true
+  // aspect ratio instead of being stretched/squeezed to match column 1's
+  // shape. Confirmed bug on a real batch: a fixed shared width computed
+  // from a 0.6-aspect rectangular panel was silently squeezing genuinely
+  // square (1.0-aspect, physical 3x3in) panels in other columns.
+  const colWidths = sets.map((lab) => {
+    const f = `${lab}_t_${TIMEPOINT}/panel1_${kind === "overlay" ? "straight" : kind}.png`;
+    const d = sizeOf(f);
+    return IMG_H * (d.width / d.height);
+  });
+  const GRID_W = colWidths.reduce((a, b) => a + b, 0) + (sets.length - 1) * COL_GAP;
   const availW = SLIDE_W - 1.0;
   if (GRID_W > availW) {
     throw new Error(`Grouped slide grid (${GRID_W.toFixed(2)}in) exceeds available width (${availW.toFixed(2)}in) for ${sets.length} columns -- split into smaller chunks (e.g. by condition) rather than shrinking columns to fit.`);
   }
   const X0 = (SLIDE_W - GRID_W) / 2;
+  const colX = [];
+  {
+    let x = X0;
+    for (const w of colWidths) { colX.push(x); x += w + COL_GAP; }
+  }
 
   // Description row under each set's column header reserves vertical space
   // for every column in the group whenever ANY set in this batch has one,
@@ -160,26 +176,27 @@ function buildGroupedSlide(title, sets, kind) {
   }
 
   sets.forEach((lab, i) => {
-    const x = X0 + i * (IMG_W + COL_GAP);
+    const x = colX[i];
+    const w = colWidths[i];
     const data = results[lab];
 
     slide.addText(lab, {
-      x: x, y: SET_LABEL_Y, w: IMG_W, h: 0.28,
+      x: x, y: SET_LABEL_Y, w: w, h: 0.28,
       fontSize: 15, bold: true, color: DARK, align: "center", fontFace: FONT, margin: 0,
     });
     if (hasDescriptions && DESCRIPTIONS[lab]) {
       slide.addText(DESCRIPTIONS[lab], {
-        x: x, y: SET_LABEL_Y + 0.3, w: IMG_W, h: 0.4,
+        x: x, y: SET_LABEL_Y + 0.3, w: w, h: 0.4,
         fontSize: 6, italic: true, color: DARK, align: "center", fontFace: FONT, margin: 0,
       });
     }
 
     for (let p = 0; p < nPanels; p++) {
       const fname = `${lab}_t_${TIMEPOINT}/panel${p + 1}_${kind}.png`;
-      slide.addImage({ path: fname, x: x, y: rowYs[p], w: IMG_W, h: IMG_H });
+      slide.addImage({ path: fname, x: x, y: rowYs[p], w: w, h: IMG_H });
       const caption = kind === "straight" ? `Panel ${p + 1}` : `Panel ${p + 1} \u2014 ${data.pct[p].toFixed(1)}%`;
       slide.addText(caption, {
-        x: x, y: capYs[p], w: IMG_W, h: 0.22,
+        x: x, y: capYs[p], w: w, h: 0.22,
         fontSize: kind === "overlay" ? 8 : 9.5,
         color: kind === "overlay" ? RED : GRAY, bold: kind === "overlay",
         align: "center", fontFace: FONT, margin: 0,
@@ -188,7 +205,7 @@ function buildGroupedSlide(title, sets, kind) {
 
     if (i < sets.length - 1) {
       slide.addShape(pres.ShapeType.line, {
-        x: x + IMG_W + COL_GAP / 2, y: SET_LABEL_Y, w: 0, h: capYs[capYs.length - 1] + 0.22 - SET_LABEL_Y,
+        x: x + w + COL_GAP / 2, y: SET_LABEL_Y, w: 0, h: capYs[capYs.length - 1] + 0.22 - SET_LABEL_Y,
         line: { color: LIGHT_LINE, width: 0.75 },
       });
     }
@@ -197,14 +214,33 @@ function buildGroupedSlide(title, sets, kind) {
   addFooter(slide);
 }
 
-// Split into chunks if too many columns would overflow the slide width
+// Split into chunks if too many columns would overflow the slide width.
+// Widths vary per set (see buildGroupedSlide), so this greedily accumulates
+// columns using each set's own aspect ratio until the next one wouldn't
+// fit, rather than assuming a uniform column width.
 function chunkForWidth(sets) {
-  const firstStraight = `${sets[0]}_t_${TIMEPOINT}/panel1_straight.png`;
-  const IMG_W = IMG_H * (sizeOf(firstStraight).width / sizeOf(firstStraight).height);
   const availW = SLIDE_W - 1.0;
-  const maxCols = Math.max(1, Math.floor((availW + COL_GAP) / (IMG_W + COL_GAP)));
+  const widthOf = (lab) => {
+    const f = `${lab}_t_${TIMEPOINT}/panel1_straight.png`;
+    const d = sizeOf(f);
+    return IMG_H * (d.width / d.height);
+  };
   const chunks = [];
-  for (let i = 0; i < sets.length; i += maxCols) chunks.push(sets.slice(i, i + maxCols));
+  let current = [];
+  let currentW = 0;
+  for (const lab of sets) {
+    const w = widthOf(lab);
+    const addedW = current.length === 0 ? w : w + COL_GAP;
+    if (current.length > 0 && currentW + addedW > availW) {
+      chunks.push(current);
+      current = [lab];
+      currentW = w;
+    } else {
+      current.push(lab);
+      currentW += addedW;
+    }
+  }
+  if (current.length > 0) chunks.push(current);
   return chunks;
 }
 
