@@ -1,4 +1,4 @@
-# panel-rust-analysis skill_version: 2.4 -- must match SKILL.md's
+# panel-rust-analysis skill_version: 2.5 -- must match SKILL.md's
 # skill_version and the version recorded in memory. If this number looks
 # out of sync with either, this file has likely reverted to a stale
 # snapshot -- see SKILL.md's persistence-warning section before trusting
@@ -300,6 +300,182 @@ def classify_rust_v14(rgba):
     rust_mask = pm & ~bare_metal
     pct = rust_mask.sum() / max(pm.sum(), 1) * 100
     return rust_mask, pct, pm
+
+
+def classify_rust_v15(rgba, stain_sat=0.045, dark_drop=-10, dark_sat=0.05,
+                      blur_sigma=25):
+    """v1.5: v1.3 base + Stage 3 recovery of pale rust bleed/stain and dark
+    oxide, gated on morphological connectivity to confirmed rust.
+
+    WHY THIS EXISTS (measured, AN26 thermal-aging batch 2): on these panels
+    the CLEAN bare surface reads hue ~240-250 deg (slightly BLUE) at
+    sat ~0.03-0.07, while the pale tan/yellow rust bleed staining that
+    trails off every rust streak reads hue ~35-40 deg at sat ~0.06-0.11 --
+    solidly rust-hued, just desaturated. v1.3's 0.22 saturation floor
+    (tuned against a lighting-gradient false positive on a DIFFERENT batch,
+    see History) therefore excludes genuine light rust staining wholesale.
+    The excluded borderline population measured 12-16 percentage points on
+    the 8030 panels alone, and 3-5 pp on the 35CD panels.
+
+    Two recovery passes on top of v1.3's confirmed mask:
+      - Stage 3a (stain/bleed): rust-hued (10-55 deg) pixels above a LOW
+        saturation floor (default 0.045) that still clears the bare
+        panel's near-neutral blue-hued surface.
+      - Stage 3b (dark oxide): pixels dark relative to their local
+        neighborhood (Gaussian residual, default cutoff -10 on the 0-255
+        scale) and mildly saturated. Deliberately NOT hue-constrained --
+        black/gray magnetite-type oxide falls outside the 10-55 window
+        entirely, which is why v1.3 misses it.
+
+    CRITICAL -- the connectivity gate: both candidate sets are grown out of
+    the v1.3-confirmed mask by morphological reconstruction, so only
+    candidates touching/continuous with confirmed rust survive. This is
+    what prevents reintroducing the documented condensation false-positive
+    failure mode (a whole condensation zone sitting at the edge of the
+    rust-hue window under warm ambient light with NO real rust present --
+    see the 2.0 and 2.3 History entries). Rust stain bleeds OUT of real
+    rust; it does not appear in isolation. Do NOT remove this gate or
+    lower stain_sat toward zero without re-checking a condensation-heavy
+    batch, or you will undo both prior fixes at once.
+
+    Use for light/moderate panels where clean bare metal still dominates.
+    For majority-corroded panels use classify_rust_v16 instead -- v1.5
+    still needs a confirmed-rust seed to grow from, so it degrades on
+    panels whose corrosion has no clean neighborhood to contrast against.
+    """
+    from skimage.morphology import reconstruction
+
+    pm = rgba[..., 3] > 10
+    hue, sat, val = hsv_channels(rgba[..., :3])
+    confirmed, _v13_pct, _ = classify_rust_v13(rgba)
+
+    in_hue = (hue >= 10) & (hue <= 55) & pm
+    stain_c = in_hue & (sat > stain_sat) & pm & ~confirmed
+
+    val255 = val * 255.0
+    residual = val255 - cv2.GaussianBlur(val255, (0, 0), sigmaX=blur_sigma)
+    dark_c = (residual < dark_drop) & (sat > dark_sat) & pm & ~confirmed
+
+    candidate = stain_c | dark_c
+    seed = np.zeros_like(val255)
+    mask_img = np.zeros_like(val255)
+    seed[confirmed] = 1.0
+    mask_img[confirmed | candidate] = 1.0
+    if mask_img.any():
+        rec = reconstruction(seed, mask_img, method='dilation')
+        recovered = (rec > 0.5) & candidate
+    else:
+        recovered = np.zeros_like(confirmed)
+
+    rust_mask = confirmed | recovered
+    pct = rust_mask.sum() / max(pm.sum(), 1) * 100
+    return rust_mask, pct, pm
+
+
+# Clean bare-panel signature, MEASURED from the clean central field of a
+# known-clean panel (8080_Unheated, AN26 thermal-aging batch 2):
+#   sat: mean 0.076, p95 0.093, p99 0.101
+#   val: mean 0.838, p5  0.808, p1  0.776
+# The cutoffs below sit well outside that distribution so normal
+# panel-to-panel exposure variation doesn't flip clean metal into rust.
+# Re-measure these against a known-clean panel if lighting/setup changes.
+BARE_SAT_MAX = 0.16
+BARE_VAL_MIN = 0.62
+BARE_RIM_PX = 14
+
+
+def _rim_correct(rust_mask, pm, rim_px=BARE_RIM_PX):
+    """Drop border-band rust pixels that aren't connected to interior rust.
+
+    A panel's beveled edge reads dark purely from 3D shading, and any
+    inverse bare-metal test misreads that shading as corrosion -- plain
+    v1.4 outlines the entire perimeter of even a visually clean panel.
+    Genuine edge corrosion is continuous with rust further in, so
+    requiring connectivity to the eroded interior removes the shading
+    artifact while keeping real edge rust.
+    """
+    from skimage.morphology import reconstruction
+
+    pm_u8 = pm.astype(np.uint8)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                  (rim_px * 2 + 1, rim_px * 2 + 1))
+    interior = cv2.erode(pm_u8, k, iterations=1).astype(bool)
+    rust_interior = rust_mask & interior
+    if not rust_interior.any():
+        return rust_interior
+    seed = np.zeros(rust_mask.shape, dtype=np.float32)
+    mask_img = np.zeros(rust_mask.shape, dtype=np.float32)
+    seed[rust_interior] = 1.0
+    mask_img[rust_mask] = 1.0
+    rec = reconstruction(seed, mask_img, method='dilation')
+    return rec > 0.5
+
+
+def classify_rust_v16(rgba, sat_max=BARE_SAT_MAX, val_min=BARE_VAL_MIN,
+                      rim_px=BARE_RIM_PX):
+    """v1.6: inverse bare-metal detection against the MEASURED clean-panel
+    signature, plus rim correction. Supersedes v1.4 for majority-corroded
+    panels.
+
+    Two improvements over v1.4:
+      1. v1.4 ran Otsu on the value channel alone, which forces a split
+         even when there is essentially no bare metal left -- on a fully
+         consumed panel it carves the corrosion itself into "bright" and
+         "dark" halves and reports ~64% when the true answer is ~99%.
+         v1.6 instead tests against fixed, measured clean-metal cutoffs
+         (sat < 0.16 AND val > 0.62), so a panel with no clean metal
+         correctly returns ~100% rather than a spurious midpoint.
+      2. Rim correction (see _rim_correct) removes the beveled-edge
+         shading false positive that made v1.4 outline the perimeter of
+         clean panels.
+
+    Use for majority-corroded panels. On lightly-corroded panels the
+    inverse formulation is the wrong way round (bare metal stops being the
+    reliably separable class) -- use classify_rust_v15 there.
+    """
+    pm = rgba[..., 3] > 10
+    hue, sat, val = hsv_channels(rgba[..., :3])
+    bare = pm & (sat < sat_max) & (val > val_min)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    bare = cv2.morphologyEx(bare.astype(np.uint8), cv2.MORPH_OPEN, k).astype(bool)
+    rust_mask = pm & ~bare
+    rust_mask = _rim_correct(rust_mask, pm, rim_px=rim_px)
+    pct = rust_mask.sum() / max(pm.sum(), 1) * 100
+    return rust_mask, pct, pm
+
+
+def bare_fraction(rgba, sat_max=BARE_SAT_MAX, val_min=BARE_VAL_MIN):
+    """Fraction of the panel matching the clean bare-metal signature.
+
+    Used as the objective selector between v1.5 and v1.6 -- it measures
+    how much clean metal is actually left rather than relying on a visual
+    'looks majority corroded' judgement call.
+    """
+    pm = rgba[..., 3] > 10
+    hue, sat, val = hsv_channels(rgba[..., :3])
+    bare = pm & (sat < sat_max) & (val > val_min)
+    return bare.sum() / max(pm.sum(), 1) * 100
+
+
+def classify_rust_auto(rgba, majority_cut=50.0):
+    """Pick v1.5 or v1.6 by how much clean bare metal remains.
+
+    Returns (rust_mask, pct, pm, method_str) -- note the 4-tuple, unlike
+    the other classifiers' 3-tuple.
+
+    Below `majority_cut` percent bare metal the panel is majority
+    corroded and v1.6 (inverse) is the right formulation; above it, clean
+    metal still dominates and v1.5 (rust-forward + stain recovery) is.
+    Validated on the 13-panel AN26 thermal-aging batch 2: the split fell
+    at 35CD/8030/8080 -> v1.5 (bare 53-96%) and 758/Control -> v1.6
+    (bare 1-43%), matching per-panel visual QA in every case.
+    """
+    bf = bare_fraction(rgba)
+    if bf < majority_cut:
+        rust_mask, pct, pm = classify_rust_v16(rgba)
+        return rust_mask, pct, pm, "v1.6"
+    rust_mask, pct, pm = classify_rust_v15(rgba)
+    return rust_mask, pct, pm, "v1.5"
 
 
 def make_overlay(rgba, rust_mask, color=(255,0,0), opacity=0.9):

@@ -1,5 +1,5 @@
 /*
- * panel-rust-analysis skill_version: 2.4 -- must match SKILL.md's
+ * panel-rust-analysis skill_version: 2.5 -- must match SKILL.md's
  * skill_version and the version recorded in memory. If this number looks
  * out of sync with either, this file has likely reverted to a stale
  * snapshot -- see SKILL.md's persistence-warning section before trusting

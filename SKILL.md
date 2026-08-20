@@ -1,12 +1,12 @@
 ---
 name: panel-rust-analysis
 description: "Full pipeline for corrosion/rust test panel photos: straighten each panel, orient the mounting hole to the top, classify rust pixels, generate red rust-overlay images, and assemble everything into a PowerPoint deck. Use this whenever the user uploads transparent-background (RGBA, pre-background-removed) panel photos -- each containing 1-3 panels side by side -- and asks to run the 'usual' analysis, 'panel straighten and rust analysis', 'do it the same as before', or similar. Also use for follow-up requests on an existing batch: reorienting panels, adjusting the rust-classification threshold, building a diagnostic overlay to sanity-check the % against a visual impression, or re-running with a different classifier. If the input images still have their original background (not yet transparent), use the panel-bg-removal skill first."
-skill_version: "2.4"
+skill_version: "2.5"
 ---
 
 ## VERSION CHECK -- do this before anything else in this skill
 
-This SKILL.md declares `skill_version: "2.4"` above. **Before running any
+This SKILL.md declares `skill_version: "2.5"` above. **Before running any
 workflow in this skill, compare that version string against what's on
 record in memory** (the person's memory edits / prior conversation
 context should have a line like "panel-rust-analysis skill version:
@@ -229,15 +229,84 @@ itself governs if this ever looks inconsistent with it):
 
 ## Rust classification method
 
-**v1.3 (`classify_rust_v13`) is the default for every panel, including
-visually majority-corroded ones.**
+**As of skill_version 2.5 the default is `classify_rust_auto`, which
+picks between v1.5 and v1.6 per panel using the measured bare-metal
+fraction.** v1.3 and v1.4 are both retained but are no longer the
+default -- each was confirmed to have a systematic, quantified failure
+mode on real batches (see below and History).
 
-**Never switch to v1.4 automatically, even if v1.3 looks like it's
-undercounting on a heavily-rusted panel -- only use v1.4
-(`classify_rust_v14`) if the user explicitly asks for it in that
-conversation.** (v1.4 was previously applied proactively on
-majority-corroded panels as a standing rule; the user later asked that
-this stop entirely -- v1.4 is opt-in only now, full stop.)
+Why the policy changed. The previous rule was "v1.3 always, v1.4 only if
+explicitly asked." That rule existed to stop Claude from switching
+classifiers on a *visual impression* that a panel looked undercounted.
+The problem was never the caution -- it was that both available
+classifiers were measurably wrong in opposite directions:
+
+- **v1.3 excluded genuine light rust wholesale.** Its 0.22 saturation
+  floor was tuned against a lighting-gradient false positive on a
+  different batch. On the AN26 thermal-aging batch the clean bare panel
+  measured hue ~240-250 deg (slightly BLUE) at sat ~0.03-0.07, while the
+  pale tan rust bleed staining measured hue ~35-40 deg at sat ~0.06-0.11
+  -- clearly rust-hued, clearly below the floor. The excluded borderline
+  population was 12-16 percentage points on the 8030 panels.
+- **v1.4 forced a split that didn't exist.** Otsu on the value channel
+  always finds a threshold, so on a panel with essentially no bare metal
+  left it carves the *corrosion* into bright and dark halves. On the
+  Control panel (1.2% bare-metal-like pixels, i.e. visually fully
+  consumed) v1.4 reported 63.99% when the true answer was ~99%.
+
+The fix is not a judgement call about which one "looks right" -- it's
+`bare_fraction()`, an objective measurement of how much clean metal
+remains, used to select the correctly-formulated method.
+
+**Selection rule (`classify_rust_auto`, default `majority_cut=50.0`):**
+- `bare_fraction >= 50%` -- clean metal still dominates, the rust-forward
+  formulation is valid -> **v1.5**
+- `bare_fraction < 50%` -- panel is majority corroded, bare metal is the
+  reliably separable class -> **v1.6**
+
+Still report which method each panel used, and still QA overlays visually
+before trusting numbers. If a user explicitly asks for v1.3 or v1.4 (e.g.
+to reproduce an earlier batch's methodology for comparison), honour that
+-- see "Comparing across sets, lots, or previous batches" below, since
+numbers are NOT comparable across classifier versions.
+
+### v1.5 (`classify_rust_v15`) -- default for light/moderate panels
+
+v1.3 base plus two recovery passes, both gated on morphological
+connectivity to the v1.3-confirmed mask:
+- **Stage 3a (stain/bleed)**: rust-hued (10-55 deg) pixels above a low
+  saturation floor (0.045) that still clears the bare panel's
+  near-neutral blue-hued surface.
+- **Stage 3b (dark oxide)**: pixels dark relative to their local
+  neighborhood (Gaussian residual < -10 on the 0-255 scale) and mildly
+  saturated. Deliberately NOT hue-constrained, because black/gray oxide
+  falls outside the 10-55 window entirely -- that's precisely what v1.3
+  misses.
+
+**The connectivity gate is load-bearing.** Both candidate sets are grown
+out of confirmed rust by morphological reconstruction, so only candidates
+continuous with real rust survive. This is what keeps the low stain floor
+from reintroducing the condensation false-positive failure mode fixed at
+2.0 and 2.3 (a condensation zone can sit at the edge of the rust-hue
+window with sat<0.15 and no real rust present -- but it won't be
+connected to confirmed rust). Do not remove the gate or push
+`stain_sat` toward zero without re-testing a condensation-heavy batch.
+
+### v1.6 (`classify_rust_v16`) -- default for majority-corroded panels
+
+Inverse bare-metal detection against **measured** clean-panel cutoffs
+(`sat < 0.16` AND `val > 0.62`) rather than v1.4's Otsu-on-value, plus
+rim correction. Two consequences:
+- A panel with no clean metal left correctly returns ~100% instead of a
+  spurious midpoint.
+- `_rim_correct` drops border-band rust pixels not connected to interior
+  rust, killing the beveled-edge shading artifact that made v1.4 outline
+  the entire perimeter of even visually clean panels.
+
+The cutoffs come from the measured clean central field of a known-clean
+panel (8080_Unheated: sat p99 = 0.101, val p1 = 0.776), with margin. **If
+the photography setup or lighting changes materially, re-measure them
+against a known-clean panel** rather than assuming they transfer.
 
 ### v1.1 (`classify_rust`) -- base method, still used as v1.3's foundation
 
@@ -276,7 +345,7 @@ v1.1 base, plus two additional stages:
   value residual<-4) that are touching it -- fills small gaps within rust
   patches without spreading into disconnected bare-metal regions.
 
-### v1.4 (`classify_rust_v14`) -- opt-in only, never automatic
+### v1.4 (`classify_rust_v14`) -- SUPERSEDED by v1.6 as of 2.5, retained only for reproducing earlier batches
 
 Inverse bare-metal detection via per-panel adaptive Otsu on the HSV value
 channel: finds bright bare-metal pixels via Otsu on V within the panel
@@ -373,6 +442,33 @@ reprocessing one side with the other's classifier for a clean comparison.
   template fix, not a batch-specific patch -- any future batch mixing
   panel shapes (square coupons, rectangular Q-panels, etc.) benefits.
 
+- **v1.5 + v1.6 added and classifier policy changed at skill_version
+  2.5** (AN26 thermal-aging batch 2, 13 single-panel crops, no rotation).
+  User reported "we are missing some rust." Diagnosed with the 3-color
+  diagnostic overlay rather than by adjusting thresholds on impression:
+  the excluded borderline (blue) population was 12-16 pp on the 8030
+  panels and 3-5 pp on 35CD. Measuring the populations directly settled
+  the cause -- the clean bare panel reads hue ~240-250 deg (slightly
+  BLUE) at sat ~0.03-0.07, while the pale tan bleed staining trailing
+  off every streak reads hue ~35-40 deg at sat ~0.06-0.11. So hue alone
+  separates stain from clean metal cleanly on this setup, and v1.3's
+  0.22 floor (a fix for a *different* batch's lighting-gradient
+  artifact) was excluding real light rust. Separately, v1.4 was found to
+  report 63.99% on the Control panel, which has only 1.2%
+  bare-metal-like pixels and is visually fully consumed (~99%) --
+  Otsu-on-value forces a split even when no bare metal exists, carving
+  the corrosion itself in half. Plain v1.4 also outlined the entire
+  perimeter of visually clean panels (beveled-edge 3D shading read as
+  corrosion). Fixes: v1.5 (connectivity-gated stain + dark-oxide
+  recovery), v1.6 (measured clean-metal cutoffs + rim correction), and
+  `classify_rust_auto`/`bare_fraction` to select between them
+  objectively instead of by eye. Validated per-panel visually across all
+  13; the auto split landed at 35CD/8030/8080 -> v1.5 (bare 53-96%) and
+  758/Control -> v1.6 (bare 1-43%), agreeing with visual QA in every
+  case, and the near-clean 8080 control panel stayed clean (2.68%),
+  confirming this is targeted recovery and not a blanket sensitivity
+  increase. Net effect on that batch: Control 63.99% -> 99.27%, 758
+  heat conditions ~56-68% -> ~95%, 8030 12-30% -> 19-46%.
 - **Second condensation false-positive fix at skill_version 2.3**: the
   2.0 fix (hue-constraining Stage 1's dark-residual candidates) genuinely
   persisted correctly -- re-verified present and unchanged when this
