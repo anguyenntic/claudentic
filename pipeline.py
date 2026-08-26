@@ -1,8 +1,8 @@
-# panel-rust-analysis skill_version: 2.5 -- must match SKILL.md's
-# skill_version and the version recorded in memory. If this number looks
-# out of sync with either, this file has likely reverted to a stale
-# snapshot -- see SKILL.md's persistence-warning section before trusting
-# anything below.
+# panel-rust-analysis skill_version: 2.7 -- must match SKILL.md's
+# skill_version, the repo copy, and the panel-rust-analysis line in
+# PROJECT_CANON.md. If it is out of sync with any of those, this file has
+# reverted to a stale snapshot: run from the repo clone instead of this
+# copy (see SKILL.md's VERSION CHECK section) rather than trusting it.
 import cv2
 import numpy as np
 from PIL import Image
@@ -457,7 +457,158 @@ def bare_fraction(rgba, sat_max=BARE_SAT_MAX, val_min=BARE_VAL_MIN):
     return bare.sum() / max(pm.sum(), 1) * 100
 
 
-def classify_rust_auto(rgba, majority_cut=50.0):
+# --- Substrate detection (added at skill_version 2.7) ---
+# Detects bright steel vs dark cast iron WITHOUT assuming the panel is
+# clean, by looking only at the DULL pixels (sat < SUBSTRATE_PROBE_SAT).
+# Those are clean metal on either substrate; corrosion is saturated on
+# both. The question then reduces to whether that clean population is
+# bright (steel) or dark (cast iron), which is the axis that inverts.
+#
+# THE ABSTAIN RULE IS LOAD-BEARING. A panel with essentially no clean
+# metal left has no clean population to measure, and whatever few dull
+# pixels remain are unrepresentative -- measured on AN26_0409 4A_1
+# (visually ~fully corroded, 1.1% dull) those stragglers read val p50
+# 0.624, which would have voted STEEL on a cast iron coupon and routed the
+# batch to the wrong classifier. So below SUBSTRATE_MIN_DULL_FRAC the
+# panel returns None and casts no vote, rather than guessing.
+SUBSTRATE_PROBE_SAT = 0.28
+SUBSTRATE_MIN_DULL_FRAC = 0.02
+SUBSTRATE_VAL_CUT = 0.55
+
+
+def detect_substrate(rgba):
+    """Return (substrate, diagnostics). substrate is "steel", "cast_iron",
+    or None when the panel is too corroded to judge (see abstain rule)."""
+    pm = rgba[..., 3] > 10
+    hue, sat, val = hsv_channels(rgba[..., :3])
+    dull = pm & (sat < SUBSTRATE_PROBE_SAT)
+    frac = dull.sum() / max(pm.sum(), 1)
+    diag = {"dull_frac": float(frac), "dull_val_p50": None}
+    if frac < SUBSTRATE_MIN_DULL_FRAC or dull.sum() < 500:
+        return None, diag
+    vm = float(np.median(val[dull]))
+    diag["dull_val_p50"] = vm
+    return ("steel" if vm > SUBSTRATE_VAL_CUT else "cast_iron"), diag
+
+
+def detect_substrate_batch(panels):
+    """Consensus substrate across a batch. `panels` is an iterable of RGBA
+    arrays. A batch is one substrate, so abstaining panels ride along with
+    the confident ones -- which is what lets a fully-corroded coupon be
+    classified correctly using its clean siblings as the evidence.
+
+    Raises if no panel is confident, or if confident panels disagree.
+    Neither is guessable and both mean the operator should set SUBSTRATE
+    explicitly.
+    """
+    votes = {}
+    for p in panels:
+        sub, _d = detect_substrate(p)
+        if sub:
+            votes[sub] = votes.get(sub, 0) + 1
+    if not votes:
+        raise ValueError(
+            "substrate detection abstained on every panel (all too corroded "
+            "to show clean metal). Set SUBSTRATE explicitly in run_all.py.")
+    if len(votes) > 1:
+        raise ValueError(
+            "substrate detection disagreed across the batch (%r). A batch "
+            "should be one substrate. Set SUBSTRATE explicitly." % votes)
+    return next(iter(votes))
+
+
+# --- Cast-iron / dark-substrate calibration (added at skill_version 2.7) ---
+# MEASURED from the known-clean central field of the AN26_0409 6A coupons
+# (gray cast iron, precut rod stock polished to 240 grit per AN_063026_2):
+#   clean 6A_2: sat p50 0.070, p95 0.153, p99 0.224 | val p50 0.294
+#   clean 6A_1: sat p50 0.092, p95 0.231, p99 0.261 | val p50 0.306
+#   rusted 4A_1:            sat p50 0.542           | val p50 0.655
+#
+# NOTE THE INVERSION relative to the steel Q-panel constants above. On
+# bright steel, clean metal is BRIGHT (val p1 0.776) and corrosion is
+# darker; on dark 240-grit cast iron, clean metal is DARK (val ~0.30) and
+# rust is BRIGHT (val ~0.66). BARE_VAL_MIN=0.62 therefore matches almost
+# nothing on cast iron: bare_fraction() returns 0.2-0.6% on every coupon
+# INCLUDING visually clean ones, classify_rust_auto routes them all to
+# v1.6, and v1.6 reports ~99.9% rust on clean metal. Confirmed on all five
+# AN26_0409 A-set coupons.
+#
+# Value is unusable as a discriminator here (a burnished//specular band on
+# clean iron reaches val 0.88, brighter than much real rust), so v1.7 uses
+# SATURATION ALONE. That works because saturation separates the two
+# populations with a real gap on this substrate, including within the dark
+# pixels specifically: dark (val<0.40) regions on the corroded 5A coupons
+# read sat 0.37-0.46 at hue ~27 (dark oxide/magnetite), while dark regions
+# on the clean 6A coupons read sat 0.07-0.09 at hue 48-60. So a saturation
+# cutoff picks up dark oxide -- the thing v1.3 misses -- without flagging
+# clean metal.
+#
+# The 0.28 cutoff sits just above the measured clean p99 (0.261). That
+# margin is TIGHTER than the steel case (0.101 p99 -> 0.16 cutoff) because
+# the burnished band broadens the clean tail. Re-measure against a
+# known-clean coupon if the polish grit, lighting, or camera changes.
+BARE_SAT_MAX_CI = 0.28
+# Drop rust components smaller than this fraction of panel area. Isolated
+# specks at this scale are polish-scratch shadow and edge artifact, not
+# corrosion worth reporting. Set to 0 to disable.
+RUST_MIN_AREA_FRAC = 0.005
+
+
+def _drop_specks(rust_mask, pm, min_area_frac):
+    if not rust_mask.any():
+        return rust_mask
+    n, lbl, stats, _c = cv2.connectedComponentsWithStats(
+        rust_mask.astype(np.uint8), connectivity=8)
+    keep = np.zeros_like(rust_mask)
+    thresh = min_area_frac * pm.sum()
+    for i in range(1, n):
+        if stats[i, cv2.CC_STAT_AREA] >= thresh:
+            keep[lbl == i] = True
+    return keep
+BARE_RIM_PX_CI = 14
+
+
+def bare_fraction_ci(rgba, sat_max=BARE_SAT_MAX_CI):
+    """Fraction of a dark-substrate panel matching the clean cast-iron
+    signature. Saturation-only -- see the calibration note above for why
+    value is not used on this substrate."""
+    pm = rgba[..., 3] > 10
+    hue, sat, val = hsv_channels(rgba[..., :3])
+    return (pm & (sat < sat_max)).sum() / max(pm.sum(), 1) * 100
+
+
+def classify_rust_v17(rgba, sat_max=BARE_SAT_MAX_CI, rim_px=BARE_RIM_PX_CI,
+                      rim_correct=True, min_area_frac=RUST_MIN_AREA_FRAC):
+    """v1.7: inverse bare-metal detection for DARK substrates (gray cast
+    iron), against a measured saturation-only clean signature.
+
+    Same inverse formulation as v1.6 -- find clean metal, call the rest
+    rust -- but the clean test is `sat < 0.28` with no value term, because
+    on cast iron the value channel is inverted and non-separable (see the
+    calibration note above). Rim correction is retained from v1.6 to kill
+    the beveled-edge shading artifact.
+
+    Use for cast iron and other dark machined substrates. Do NOT use on
+    bright steel Q-panels -- there, clean metal is bright and a
+    saturation-only test will flag the darker corrosion correctly but also
+    lose v1.6's value-based separation of glare. Select it explicitly via
+    classify_rust_auto(substrate="cast_iron"), not by eye.
+    """
+    pm = rgba[..., 3] > 10
+    hue, sat, val = hsv_channels(rgba[..., :3])
+    bare = pm & (sat < sat_max)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    bare = cv2.morphologyEx(bare.astype(np.uint8), cv2.MORPH_OPEN, k).astype(bool)
+    rust_mask = pm & ~bare
+    if rim_correct:
+        rust_mask = _rim_correct(rust_mask, pm, rim_px=rim_px)
+    if min_area_frac:
+        rust_mask = _drop_specks(rust_mask, pm, min_area_frac)
+    pct = rust_mask.sum() / max(pm.sum(), 1) * 100
+    return rust_mask, pct, pm
+
+
+def classify_rust_auto(rgba, majority_cut=50.0, substrate="steel"):
     """Pick v1.5 or v1.6 by how much clean bare metal remains.
 
     Returns (rust_mask, pct, pm, method_str) -- note the 4-tuple, unlike
@@ -470,6 +621,16 @@ def classify_rust_auto(rgba, majority_cut=50.0):
     at 35CD/8030/8080 -> v1.5 (bare 53-96%) and 758/Control -> v1.6
     (bare 1-43%), matching per-panel visual QA in every case.
     """
+    if substrate == "cast_iron":
+        # Dark substrate: the steel bare-metal signature does not transfer
+        # (see the BARE_SAT_MAX_CI calibration note). v1.7 is the whole
+        # selection -- there is no second method to choose between here,
+        # and bare_fraction() must NOT be consulted, since it reads ~0 on
+        # clean cast iron and would silently route to v1.6.
+        rust_mask, pct, pm = classify_rust_v17(rgba)
+        return rust_mask, pct, pm, "v1.7"
+    if substrate != "steel":
+        raise ValueError("unknown substrate %r (expected 'steel' or 'cast_iron')" % substrate)
     bf = bare_fraction(rgba)
     if bf < majority_cut:
         rust_mask, pct, pm = classify_rust_v16(rgba)
@@ -478,13 +639,48 @@ def classify_rust_auto(rgba, majority_cut=50.0):
     return rust_mask, pct, pm, "v1.5"
 
 
-def make_overlay(rgba, rust_mask, color=(255,0,0), opacity=0.9):
+# Steel Q-panel house style (unchanged since 1.0): pure red, 90%. Kept as
+# the default so decks for existing steel batches stay visually comparable
+# with ones already delivered.
+OVERLAY_COLOR = (255, 0, 0)
+OVERLAY_OPACITY = 0.9
+
+# Cast-iron style (added 2.7, scoped deliberately). Near-fully-corroded
+# coupons render as a featureless solid disc under the steel style -- a
+# 99.1% coupon and a 94.6% coupon look identical and neither shows its
+# corrosion morphology. Softer red at lower opacity, blended rather than
+# replaced, keeps the texture readable. Applied only on the v1.7 path;
+# run_all.py selects it from the method actually used.
+OVERLAY_COLOR_CI = (255, 85, 85)
+OVERLAY_OPACITY_CI = 0.45
+
+
+def make_overlay(rgba, rust_mask, color=OVERLAY_COLOR, opacity=OVERLAY_OPACITY,
+                 blend=False):
+    """Draw the rust mask over a panel.
+
+    Two modes, because the steel and cast-iron house styles differ (2.7):
+
+    - `blend=False` (default, steel): REPLACE the pixel with `color` and
+      set its alpha to `opacity`. This is the original 1.0 behaviour,
+      preserved byte-for-byte so decks rebuilt for existing steel batches
+      match ones already delivered. Do not "simplify" this into the blend
+      path -- blending at 0.9 looks nearly identical but is not the same
+      output, and the difference is invisible in a render.
+    - `blend=True` (cast iron): mix `color` into the pixel at `opacity`
+      and keep the panel's own alpha, so corrosion texture reads through.
+    """
+    if blend:
+        out = rgba.copy().astype(np.float32)
+        for c in range(3):
+            out[..., c] = np.where(rust_mask,
+                                   (1 - opacity) * out[..., c] + opacity * color[c],
+                                   out[..., c])
+        out[..., 3] = rgba[..., 3]
+        return np.clip(out, 0, 255).astype(np.uint8)
+
     out = rgba.copy()
-    alpha = out[...,3].astype(np.float32)/255.0
-    overlay_alpha = np.where(rust_mask, opacity, 0.0)
     for c in range(3):
-        out[...,c] = np.where(rust_mask, color[c], out[...,c])
-    out[...,3] = np.clip(overlay_alpha*255 + (1-overlay_alpha)*0, 0, 255).astype(np.uint8)
-    # keep original panel visible where not rust: use original alpha there
-    out[...,3] = np.where(rust_mask, (opacity*255), rgba[...,3])
+        out[..., c] = np.where(rust_mask, color[c], out[..., c])
+    out[..., 3] = np.where(rust_mask, int(opacity * 255), rgba[..., 3])
     return out

@@ -1,9 +1,9 @@
 """
-panel-rust-analysis skill_version: 2.5 -- must match SKILL.md's
-skill_version and the version recorded in memory. If this number looks
-out of sync with either, this file has likely reverted to a stale
-snapshot -- see SKILL.md's persistence-warning section before trusting
-anything below.
+panel-rust-analysis skill_version: 2.7 -- must match SKILL.md's
+skill_version, the repo copy, and the panel-rust-analysis line in
+PROJECT_CANON.md. If it is out of sync with any of those, this file has
+reverted to a stale snapshot: run from the repo clone instead of this
+copy (see SKILL.md's VERSION CHECK section) rather than trusting it.
 
 Template driver script for the panel-rust-analysis skill.
 
@@ -40,20 +40,42 @@ Adjust the `fname` line if the project's naming differs.
 """
 import os, json
 from pipeline import (load_rgba, get_panels, straighten_panel, make_overlay,
+                      OVERLAY_COLOR, OVERLAY_OPACITY,
+                      OVERLAY_COLOR_CI, OVERLAY_OPACITY_CI,
                       classify_rust, classify_rust_v13, classify_rust_v14,
-                      classify_rust_v15, classify_rust_v16, classify_rust_auto,
-                      bare_fraction)
+                      classify_rust_v15, classify_rust_v16, classify_rust_v17,
+                      classify_rust_auto, bare_fraction, bare_fraction_ci)
 from PIL import Image
 
 # ---- EDIT THESE FOR THE CURRENT BATCH ----
 UPLOADS_DIR = "/mnt/user-data/uploads"
-PREFIX = "AN26_0110"          # project/sample prefix used in filenames
-LABELS = ["9B", "9D", "10B", "10D"]   # set/condition labels
+PREFIX = "AN26_0409"          # project/sample prefix used in filenames
+LABELS = ["4A", "5A", "6A"]   # set/condition labels
 TIMEPOINT = "24h"
-MAX_PANELS = 3                # override per-set below if needed, e.g. MAX_PANELS_OVERRIDE = {"8B": 1}
+MAX_PANELS = 1                # one round coupon per image
 MAX_PANELS_OVERRIDE = {}
-CLASSIFIER = "auto"           # "auto" | "v1.5" | "v1.6" | "v1.3" | "v1.4" | "v1.1"
-STRAIGHTEN = True             # set False for pre-cropped single-panel batches
+# Optional: {set_label: [filename, ...]} when a set's REPLICATES arrive as
+# separate image files rather than side by side in one photo. Panel
+# numbering continues across the files, so a set given two single-coupon
+# images yields "Coupon 1" and "Coupon 2" within one column -- not two
+# columns each called Coupon 1.
+#
+# A trailing _1/_2 (or .1/.2) on a specimen ID denotes a REPLICATE under
+# one condition, not a separate condition. Grouping them here is what
+# makes Average/Std Dev/RSD meaningful on the summary slide; listing them
+# as separate LABELS silently reports n=1 for everything. Leave {} to use
+# the default one-file-per-label convention.
+SET_FILES = {}
+CLASSIFIER = "auto"           # "auto" | "v1.7" | "v1.5" | "v1.6" | "v1.3" | "v1.4" | "v1.1"
+SUBSTRATE = "cast_iron"       # "steel" (bright Q-panels) | "cast_iron" (dark
+                              # machined coupons). Consumed by "auto". This is
+                              # EXPLICIT on purpose: the clean-metal signature
+                              # inverts between the two, and auto-detecting it
+                              # from a possibly-fully-corroded panel is exactly
+                              # the kind of silent guess that produces 99.9%
+                              # rust on a clean coupon. See pipeline.py's
+                              # BARE_SAT_MAX_CI calibration note.
+STRAIGHTEN = False            # set False for pre-cropped single-panel batches
                               # where the user asked for no rotation
 # -------------------------------------------
 
@@ -61,11 +83,11 @@ STRAIGHTEN = True             # set False for pre-cropped single-panel batches
 def _classify(arr):
     """Dispatch to the configured classifier. Returns (mask, pct, method)."""
     if CLASSIFIER == "auto":
-        mask, pct, pm, method = classify_rust_auto(arr)
+        mask, pct, pm, method = classify_rust_auto(arr, substrate=SUBSTRATE)
         return mask, pct, method
     fn = {"v1.1": classify_rust, "v1.3": classify_rust_v13,
           "v1.4": classify_rust_v14, "v1.5": classify_rust_v15,
-          "v1.6": classify_rust_v16}[CLASSIFIER]
+          "v1.6": classify_rust_v16, "v1.7": classify_rust_v17}[CLASSIFIER]
     mask, pct, pm = fn(arr)
     return mask, pct, CLASSIFIER
 
@@ -74,19 +96,25 @@ full_results = {}     # full_results.json -- canonical deck-template input shape
 image_dims = {}       # image_dims.json -- keyed by full relative path
 
 for lab in LABELS:
-    fname = f"{PREFIX}-{lab}_t_{TIMEPOINT}.png"
-    path = os.path.join(UPLOADS_DIR, fname)
-    arr = load_rgba(path)
+    files = SET_FILES.get(lab) or [f"{PREFIX}-{lab}_t_{TIMEPOINT}.png"]
     max_panels = MAX_PANELS_OVERRIDE.get(lab, MAX_PANELS)
-    comps, labels_arr, stats = get_panels(arr, max_panels=max_panels)
 
     set_dir = f"{lab}_t_{TIMEPOINT}"
     os.makedirs(set_dir, exist_ok=True)
     panel_results = []
     pct_list = []
-
     methods_used = []
-    for idx, comp_id in enumerate(comps):
+
+    # Panel index runs across ALL files in the set so replicates split
+    # over separate images number continuously (Coupon 1, Coupon 2, ...).
+    specimens = []
+    for fname in files:
+        arr = load_rgba(os.path.join(UPLOADS_DIR, fname))
+        comps, labels_arr, stats = get_panels(arr, max_panels=max_panels)
+        for comp_id in comps:
+            specimens.append((arr, labels_arr, stats, comp_id))
+
+    for idx, (arr, labels_arr, stats, comp_id) in enumerate(specimens):
         if STRAIGHTEN:
             straight = straighten_panel(arr, labels_arr, comp_id, stats)
         else:
@@ -108,7 +136,15 @@ for lab in LABELS:
         straight_img.save(straight_rel)
 
         rust_mask, pct, method = _classify(straight)
-        overlay = make_overlay(straight, rust_mask, color=(255, 0, 0), opacity=0.9)
+        # Overlay style follows the METHOD, not a global setting: cast-iron
+        # (v1.7) panels get the soft blended red, steel keeps the original
+        # pure red so previously-delivered decks stay comparable.
+        if method == "v1.7":
+            ov_color, ov_op, ov_blend = OVERLAY_COLOR_CI, OVERLAY_OPACITY_CI, True
+        else:
+            ov_color, ov_op, ov_blend = OVERLAY_COLOR, OVERLAY_OPACITY, False
+        overlay = make_overlay(straight, rust_mask, color=ov_color,
+                               opacity=ov_op, blend=ov_blend)
         overlay_img = Image.fromarray(overlay, mode="RGBA")
         overlay_rel = os.path.join(set_dir, f"panel{idx+1}_overlay.png")
         overlay_img.save(overlay_rel)

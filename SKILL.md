@@ -1,40 +1,96 @@
 ---
 name: panel-rust-analysis
-description: "Full pipeline for corrosion/rust test panel photos: straighten each panel, orient the mounting hole to the top, classify rust pixels, generate red rust-overlay images, and assemble everything into a PowerPoint deck. Use this whenever the user uploads transparent-background (RGBA, pre-background-removed) panel photos -- each containing 1-3 panels side by side -- and asks to run the 'usual' analysis, 'panel straighten and rust analysis', 'do it the same as before', or similar. Also use for follow-up requests on an existing batch: reorienting panels, adjusting the rust-classification threshold, building a diagnostic overlay to sanity-check the % against a visual impression, or re-running with a different classifier. If the input images still have their original background (not yet transparent), use the panel-bg-removal skill first."
-skill_version: "2.5"
+description: "Full pipeline for corrosion/rust test specimen photos -- flat panels (Q-panels) AND round or machined coupons, on steel or cast iron: straighten each specimen, orient any mounting hole to the top, classify rust pixels, generate rust-overlay images, and assemble everything into a PowerPoint deck. Use this whenever the user uploads transparent-background (RGBA, pre-background-removed) panel or coupon photos -- each containing 1-3 specimens side by side -- and asks to run the 'usual' analysis, 'panel straighten and rust analysis', a coupon or button rust analysis, 'do it the same as before', or similar. Also use for follow-up requests on an existing batch: reorienting panels, adjusting the rust-classification threshold, building a diagnostic overlay to sanity-check the % against a visual impression, or re-running with a different classifier. If the input images still have their original background (not yet transparent), use the panel-bg-removal skill first."
+skill_version: "2.7"
 ---
 
 ## VERSION CHECK -- do this before anything else in this skill
 
-This SKILL.md declares `skill_version: "2.5"` above. **Before running any
-workflow in this skill, compare that version string against what's on
-record in memory** (the person's memory edits / prior conversation
-context should have a line like "panel-rust-analysis skill version:
-X.Y"). Three possible outcomes:
+**Do not check the version against memory.** Memory has drifted from the
+files independently of the files reverting (confirmed: memory recorded the
+2.5 auto-selector as choosing between v1.3 and v1.6 when the file has
+always said v1.5 and v1.6), so a memory-vs-file comparison produces two
+unreliable readings and no way to tell which is wrong. Both sides also had
+to be hand-updated on every change, which is the step that kept getting
+skipped.
 
-- **Match** -- proceed normally.
-- **File version is LOWER than memory's recorded version, or missing
-  entirely** -- this skill has reverted to a stale snapshot (the
-  persistence failure documented below happened again). Say so plainly to
-  the person before doing anything else: name the mismatch (e.g. "the
-  skill file says 2.0 but memory has 2.1 on record -- this reverted
-  again"), and treat every fix/style value in this file as suspect until
-  reconciled against memory and, if needed, past conversation history.
-  Do not silently proceed as if the stale file is correct.
-- **File version is HIGHER than memory's recorded version** -- memory is
-  stale (e.g. the person is in a fresh context and memory hasn't caught up
-  yet, or this is a genuinely newer skill state memory doesn't know about
-  yet). Trust the file, and if it seems appropriate update memory to match.
+Check against the **canonical source in the project context** instead.
+Two anchors, in this order:
 
-**Whenever you and the person agree on a real change to this skill**
-(pipeline fix, deck style change, classifier policy, etc.), bump
-`skill_version` in every one of the four skill files (this one,
-`pipeline.py`, `build_deck_template.js`, `run_all.py` -- see their own
-version markers near the top) to the same new value, AND update the
-memory record to match, in the same turn. A version bump that only
-happens in the files (not memory) or only in memory (not the files)
-defeats the entire point of this mechanism -- both sides must move
-together, and both must be independently verified as described below.
+**1. The project canon file.** Every conversation in this project has the
+project files listed in context. Look for `PROJECT_CANON.md` (or any file
+whose name contains `CANON`) under `/mnt/project/` and read the
+`panel-rust-analysis` line. This is visible in every session regardless of
+what state the installed skill is in, which is exactly why it is the
+anchor.
+
+The canon file may carry a date in its NAME (e.g.
+`PROJECT_CANON_2026-08-26.md`) so its currency is visible at a glance in
+the project file list without opening it. So glob rather than assuming a
+fixed filename:
+
+```bash
+ls /mnt/project/ | grep -i canon
+cat /mnt/project/*CANON*.md 2>/dev/null | grep -i "panel-rust-analysis"
+```
+
+**If more than one CANON file matches, stop and say so.** Uploading a
+newly-dated canon without deleting the old one leaves two files
+disagreeing about the current version, which is the exact failure this
+anchor exists to prevent -- silently reading either one is worse than
+reporting the conflict. Prefer the newest date in the filename, but say
+plainly that duplicates exist and should be cleaned up. Note that a
+`__1_`-style suffix on the filename is the same problem wearing a
+disguise: it means the file was uploaded twice.
+
+**2. The repo, which is what actually runs.** The canonical files live at
+`github.com/anguyenntic/claudentic` (public). Clone it and read
+`skill_version` from its `SKILL.md`:
+
+```bash
+cd /home/claude && git clone --depth 1 \
+  https://github.com/anguyenntic/claudentic.git canon 2>/dev/null
+grep -m1 skill_version canon/SKILL.md
+```
+
+### Then act on what you find
+
+- **Installed version == repo version** -- proceed, and run from the repo
+  copy anyway (see below). Nothing to report.
+- **Installed version < repo version, or the installed files carry no
+  `skill_version` marker at all** -- the installed skill has reverted.
+  Say so plainly in one line, then **run from the repo copy** and carry
+  on. Do not stop, do not ask the person to re-upload before proceeding,
+  and do not reconstruct the fixes from conversation history: the repo
+  already has them. Mention the re-upload once, at the end, as a
+  housekeeping note.
+- **Installed version > repo version** -- the person edited the installed
+  copy without pushing. Flag it and ask which to trust before running
+  anything; this is the one case where you must not guess.
+- **No network, and the repo is unreachable** -- fall back to the project
+  canon file's version number. If the installed files do not match it,
+  say so and stop rather than producing numbers under an unknown method.
+
+### Always run from the repo copy
+
+```bash
+cd /home/claude && rm -rf panel-work && mkdir panel-work
+cp canon/pipeline.py canon/run_all.py canon/build_deck_template.js panel-work/
+```
+
+This is the whole point of the change. The installed copy is a pointer;
+the repo is the code. A revert of the installed files then costs a
+one-line note instead of a session of archaeology, and it cannot silently
+change the classifier out from under a batch.
+
+### When you and the person agree on a real change
+
+Bump `skill_version` in all four files, **push to the repo**, and update
+the `panel-rust-analysis` line in `PROJECT_CANON.md`. Re-uploading the
+installed skill is optional housekeeping, not a prerequisite -- the repo
+is what runs. Verify the push landed by re-cloning to a fresh path and
+diffing, per the verification rules below; a push you did not verify is
+the same failure mode in a new place.
 
 # Panel Rust Analysis
 
@@ -53,6 +109,12 @@ once: the v1.3 classifier itself, the deck house style (font/palette/
 layout), the `max_panels` parameter, the diagonal-canvas rotation fix, the
 180-degree orientation fix, and this file's own documentation of all of
 the above.
+
+**As of skill_version 2.6 this is contained rather than solved**: the
+workflow runs from the repo clone, not from the installed files, so a
+revert of the installed copy no longer changes what code executes. The
+rules below still apply to the repo copy -- they are what keeps a bad
+edit from being pushed in the first place.
 
 **Consequences of this for how you work in this skill:**
 
@@ -80,6 +142,57 @@ the above.
    script) before the conversation ends, verified per (2), and the
    rationale/exact values added to this SKILL.md so future sessions don't
    have to reconstruct it from conversation_search archaeology.
+
+## Intake -- ask before running (added at skill_version 2.7)
+
+Photos usually arrive with no context: a folder of images and "run the
+usual analysis." Everything below shapes the output filename, the slide
+captions and the deck's description row, and **none of it is inferable
+from the pixels**. Guessing produces a deck that is confidently mislabeled
+-- which is worse than an unlabeled one, because it looks authoritative.
+Before setting up the working directory, check the conversation and
+project context for each item, and **ask for whatever is genuinely
+missing, in one batched message**:
+
+1. **Exposure duration / timepoint** -- e.g. 24h, 96h. Sets `TIMEPOINT`,
+   appears in every slide title, the footer, and the filename.
+2. **Test method and parameters** -- salt fog (B117), humidity cabinet
+   (D1748), cyclic damp heat (IEC 60068-2-30), temperature/RH, and
+   concentration or dilution if a product is applied. Sets `TEST_METHOD`
+   in the filename. **Do not default to B117**; before 2.7 it was
+   hardcoded and silently mislabeled every humidity-cabinet batch as salt
+   fog.
+3. **Substrate** -- cast iron, cold-rolled steel, etc. `detect_substrate`
+   can usually determine this, so treat the answer as confirmation and say
+   what detection found rather than asking cold. Ask outright when
+   detection abstains or the batch disagrees.
+4. **Specimen type** -- panels or coupons. Sets `SPECIMEN`. Do NOT derive
+   it from substrate: steel coupons and cast iron panels both exist.
+5. **Whether a trailing `_1`/`_2` (or `.1`/`.2`) marks a REPLICATE or a
+   separate condition.** On this project it marks a replicate: `5A_1` and
+   `5A_2` are coupons 1 and 2 of condition 5A, not two conditions. Getting
+   this wrong is quiet and costly -- each replicate becomes its own
+   column, every column reads "Coupon 1", and the summary reports n=1 with
+   no Average/Std Dev/RSD for anything. Group replicates with `SET_FILES`
+   in `run_all.py`. Confirm rather than assume: a trailing index can
+   legitimately mean a separate condition on other projects.
+6. **What each set label means** -- e.g. what distinguishes 5A from 6A.
+   This is the one that most improves the deck and the one most often
+   skipped. Answers go verbatim into `DESCRIPTIONS`, keyed by set label.
+
+Rules for handling the answers:
+
+- **Ask once, batched.** Do not interrogate set by set, and do not block
+  the analysis on a reply you can fold in at deck-build time -- run the
+  pipeline and QA the overlays while waiting if that keeps things moving.
+- **Never infer a description from a label** -- "6A" implying a cleaning
+  step, a control, a replicate. `DESCRIPTIONS` takes the person's exact
+  wording only; this rule predates 2.7 and the intake step exists to
+  source that wording legitimately rather than to relax it.
+- **If they decline or don't know**, leave the field out and build without
+  it. An omitted description row is fine; an invented one is not.
+- **Don't re-ask what's already established** in the conversation, the
+  project files, or an earlier batch of the same experiment.
 
 ## Prerequisites
 
@@ -157,8 +270,15 @@ itself governs if this ever looks inconsistent with it):
   something to silently reintroduce because it seems friendlier to skim.
 - **Grouped slides** (all sets as columns on one slide -- one for
   straightened, one per overlay method in use -- now the deck's only
-  panel-image content): a **fixed row height**, `IMG_H = 1.6in`, shared by
-  every column, but **`IMG_W` is computed PER COLUMN from that set's own
+  panel-image content): `IMG_H = 1.6in` is a **floor, not a fixed value**,
+  as of 2.7 -- the row height grows to fill whichever of the available
+  width or height binds first, and the whole block (column label,
+  description row and images) is centred vertically when slack remains.
+  A batch that already filled the slide (3 replicates per column) has ~0
+  slack and lays out exactly as before; a sparse batch no longer renders
+  its specimens tiny at the top of a band of white. On the AN26_0409
+  5-coupon batch this took the row height from 1.6in to 2.19in
+  (width-bound). Row height is still shared by every column, but **`IMG_W` is computed PER COLUMN from that set's own
   straightened-panel aspect ratio** (fixed at skill_version 2.4 -- a
   single shared width computed only from the first set was silently
   stretching/squeezing any column whose panels had a different native
@@ -180,7 +300,10 @@ itself governs if this ever looks inconsistent with it):
   the narrow column width; don't bump either back up without re-checking
   the fit on a real render. A thin vertical divider line between adjacent
   set columns.
-  - **Optional description row**: a short italic 6pt line (DARK color)
+  - **Optional description row**: a short italic **9pt** line (DARK
+    color, raised from 6pt at 2.7 and tucked to 0.26in below the set
+    label -- at 6pt and 0.3in it floated free and read as a footnote
+    rather than as part of the column header)
     under each set's column header (e.g. a formulation summary), via the
     `DESCRIPTIONS` map keyed by set label. **Never invent or infer this
     text -- only fill it in with exact wording the user gave you for that
@@ -192,6 +315,16 @@ itself governs if this ever looks inconsistent with it):
     grouped slides automatically. The template also throws a hard error if
     a chunk would still overflow, so a bug here fails loudly instead of
     silently clipping columns off-slide.
+- **Optional test-conditions slide, added FIRST** (`METHODS` in
+  `build_deck_template.js`, added at 2.7): ordered label/value rows from
+  the intake questions -- exposure window, test method and parameters,
+  substrate, specimen geometry, preparation sequence. Omitted entirely
+  when `METHODS` is `[]`. This does **not** contradict the no-title-slide
+  rule below: it carries the run's actual conditions, which otherwise
+  appear nowhere in the deck and cannot be recovered from the images
+  months later. Same sourcing rule as `DESCRIPTIONS` -- the person's
+  exact wording, never inferred, never expanded into detail they did not
+  give.
 - **No title slide, but a summary-table slide IS required**, added last
   (after all grouped slides): rust % per panel per set, plus Average, Std
   Dev, and RSD per set. Canonical palette/font, method footnote at the
@@ -258,6 +391,15 @@ The fix is not a judgement call about which one "looks right" -- it's
 `bare_fraction()`, an objective measurement of how much clean metal
 remains, used to select the correctly-formulated method.
 
+**Substrate first (added at 2.7).** `classify_rust_auto` takes a
+`substrate` argument, set from `SUBSTRATE` in `run_all.py`. For
+`"cast_iron"` it returns **v1.7** unconditionally -- the bare_fraction
+selection below is a steel-only rule and is skipped entirely, because on
+dark substrates it reads ~0% on clean metal and would silently route a
+clean coupon to v1.6 and report ~100% rust. An unrecognised substrate
+raises rather than falling back. The rule below applies to
+`substrate="steel"` only:
+
 **Selection rule (`classify_rust_auto`, default `majority_cut=50.0`):**
 - `bare_fraction >= 50%` -- clean metal still dominates, the rust-forward
   formulation is valid -> **v1.5**
@@ -308,6 +450,66 @@ panel (8080_Unheated: sat p99 = 0.101, val p1 = 0.776), with margin. **If
 the photography setup or lighting changes materially, re-measure them
 against a known-clean panel** rather than assuming they transfer.
 
+### v1.7 (`classify_rust_v17`) -- dark substrates (gray cast iron)
+
+**Selected explicitly via `SUBSTRATE = "cast_iron"` in `run_all.py`, never
+by eye and never auto-detected.** `classify_rust_auto` routes straight to
+v1.7 for this substrate and does not consult `bare_fraction` at all.
+
+Why it exists (measured, AN26_0409 A-set, gray cast iron rod coupons
+polished to 240 grit per AN_063026_2): **the clean-metal signature the
+v1.5/v1.6 pair depends on is inverted on this substrate.** On bright steel
+Q-panels clean metal is BRIGHT (val p1 0.776) and corrosion is darker. On
+dark cast iron clean metal is DARK (val p50 0.29-0.31, sat p50 0.07-0.09)
+and rust is BRIGHT (val p50 0.66, sat p50 0.54). Consequences, all
+confirmed on the five A-set coupons:
+
+- `bare_fraction()` (`sat < 0.16 AND val > 0.62`) returns **0.17-0.55% on
+  every coupon, including the two visually clean ones**.
+- `classify_rust_auto` therefore routes all of them to v1.6, and v1.6
+  reports **99.7% and 99.9% rust on coupons with no visible rust**.
+- v1.5 also fails here (90.7% / 46.3% on those same clean coupons): its
+  Stage 3b dark-oxide pass is not hue-constrained, so on a uniformly dark
+  substrate it floods the whole coupon body once connectivity to any real
+  edge rust is established.
+- v1.3 is the only pre-2.7 classifier in the right ballpark, but carries
+  its own false positive here: on 6A_1 it reported 10.8%, of which 47% of
+  flagged pixels sat at val>0.55 -- the burnished/specular arc on clean
+  machined iron, not rust.
+
+**Method**: inverse bare-metal detection like v1.6, but the clean test is
+**saturation only** (`sat < 0.28`), with v1.6's `_rim_correct` retained.
+Value is deliberately excluded because it is not separable on this
+substrate -- a burnished band on clean iron reaches val 0.88, brighter
+than much genuine rust, so any value term reintroduces exactly the
+false positive v1.3 shows.
+
+Saturation works because the two populations separate with a real gap,
+**including within the dark pixels specifically** -- which is what lets a
+saturation rule catch dark oxide rather than miss it:
+
+| population | sat | hue |
+|---|---|---|
+| clean iron, whole coupon (6A) | p50 0.07-0.09, p99 0.22-0.26 | 48-60 deg |
+| clean iron, dark pixels only (val<0.40) | p50 0.069-0.088 | 48-60 deg |
+| corroded, dark pixels only (val<0.40, 5A) | p50 0.37-0.46 | 27-28 deg |
+| corroded, whole coupon (4A) | p50 0.54 | 27 deg |
+
+**Cutoff selection**: 0.28 sits just above the measured clean p99 (0.261).
+That margin is tighter than the steel case (p99 0.101 -> cutoff 0.16)
+because the burnished band broadens the clean tail; it was chosen from a
+cutoff sweep (0.22-0.34) as the point where the clean controls fall below
+2% while the rusted control holds above 99%. **Re-measure against a
+known-clean coupon if polish grit, lighting, or camera changes.**
+
+**Known limitation -- thin stain undercounting.** Faint rust bleed can sit
+below 0.28. On 5A_1 the 14.9% left unflagged measured sat p50 0.194 at hue
+30 deg, i.e. rust-hued and four times the saturation of clean iron -- so
+that coupon's 85.1% is very likely an undercount and the apparent 5A_1 vs
+5A_2 replicate spread (85.1 vs 94.6) is partly threshold artifact, not
+sample difference. Flag this rather than treating a v1.7 number as exact
+in the 80-95% band. Values near 0 and near 100 are robust.
+
 ### v1.1 (`classify_rust`) -- base method, still used as v1.3's foundation
 
 Per-panel **adaptive Otsu threshold** on the HSV saturation channel:
@@ -357,8 +559,18 @@ for it by name or explicitly requests it after you flag that v1.3 looks
 like it might be undercounting. Takes only `rgba` as input; returns
 `(rust_mask, pct, pm)`.
 
-Overlay convention (all versions): pure red `(255, 0, 0)` at 90% opacity
-on a transparent background (`make_overlay` in `pipeline.py`).
+**Overlay convention is per-substrate as of 2.7**, selected in
+`run_all.py` from the method actually used, not from a global setting:
+
+- **Steel (v1.1-v1.6)**: pure red `(255, 0, 0)` at 90% opacity,
+  replacing the pixel. Unchanged since 1.0 -- kept so decks for existing
+  steel batches stay visually comparable with ones already delivered.
+- **Cast iron (v1.7)**: soft red `(255, 85, 85)` at 45%, **blended into**
+  the panel pixels rather than replacing them, so corrosion morphology
+  reads through. Near-fully-corroded coupons otherwise render as
+  featureless solid discs -- a 99.1% and a 94.6% coupon look identical
+  and neither shows any structure. Scoped to cast iron deliberately;
+  revisit before applying it to steel batches.
 
 ### Known limitations (be upfront about these if asked)
 
@@ -423,6 +635,55 @@ it's not in the current session. If versions differ, note it and consider
 reprocessing one side with the other's classifier for a clean comparison.
 
 ## History / rationale (context if asked, not required reading to run this)
+
+- **Replicate grouping (`SET_FILES`) added at skill_version 2.7.** The
+  pipeline assumed one image file per set, so a set whose replicates
+  arrived as separate single-specimen photos had to be listed as separate
+  LABELS. That rendered each replicate as its own column captioned
+  "Coupon 1", and made the summary slide report n=1 across the board --
+  suppressing Average/Std Dev/RSD exactly where they were meaningful.
+  `SET_FILES` maps a set label to a list of files and numbers specimens
+  continuously across them. On AN26_0409 this collapsed five columns into
+  three, restored "Coupon 1 / Coupon 2" within 5A and 6A, and produced
+  real replicate statistics (5A 89.6% +/- 5.0, 6A 0.7% +/- 0.7).
+
+- **Intake step, specimen noun and test method added at skill_version
+  2.7.** `Panel` was hardcoded into slide captions, grouped-slide titles
+  and summary headers, and `B117` into the output filename. Both are
+  wrong for a round-coupon humidity-cabinet batch, and neither is
+  recoverable from the images -- the deck simply asserted salt fog on
+  panels. Parameterised as `SPECIMEN` and `TEST_METHOD`, and paired with
+  the Intake section above so the values get asked for rather than
+  defaulted. Set descriptions were folded into the same intake question,
+  since `DESCRIPTIONS` has always required the person's exact wording and
+  previously had no sanctioned way to obtain it.
+
+- **v1.7 added and substrate made explicit at skill_version 2.7**
+  (AN26_0409 A-set, 5 single round cast-iron coupons, no straightening).
+  First non-steel substrate the skill had seen. Caught before any number
+  was delivered by re-measuring the clean-metal signature against the
+  known-clean 6A coupons, per the standing instruction in the v1.6
+  section to re-measure when the setup changes materially -- the stock
+  auto path would have reported 99.7%/99.9% rust on those two clean
+  coupons. Root cause was not a bad threshold but an inverted substrate:
+  clean cast iron is dark and dull where clean steel is bright and dull,
+  so `bare_fraction`'s value term matches nothing. Fixed with a
+  saturation-only clean test (v1.7) selected by an explicit `SUBSTRATE`
+  flag rather than auto-detection, since detecting substrate from a
+  possibly-fully-corroded panel is the same class of silent guess.
+  Final at sat<0.28 with the 0.5% minimum-component filter: 4A_1 99.1%,
+  5A_1 84.5%, 5A_2 94.6%, 6A_1 0.00%, 6A_2 1.3%, each visually QA'd
+  against the operator's own read of the coupons. The speck filter is
+  what takes 6A_1 to a true zero: its largest rust component was 0.264%
+  of panel area (edge artifact) against 6A_2's genuine 1.304% patch, so
+  a 0.5% floor separates them with margin and moves the corroded coupons
+  by under 0.4 pp. Raising the saturation cutoff was considered and
+  rejected for this -- at 0.36 it removes 16.5% of 5A_1 measuring sat
+  0.318 at hue 28 deg, i.e. the dark-oxide field, which is corrosion
+  product and not metal. Also at 2.7: `build_deck_template.js` derives panel
+  count per set from `full_results.json` instead of hardcoding 3, and
+  suppresses Std Dev/RSD when no set has replicates (a column of 0.0%
+  reads as perfect precision at n=1).
 
 - **Grouped-slide column-width fix at skill_version 2.4**: the fixed
   column grid computed a single `IMG_W` from set 1's straightened-panel
