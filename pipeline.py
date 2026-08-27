@@ -1,4 +1,4 @@
-# panel-rust-analysis skill_version: 2.7 -- must match SKILL.md's
+# panel-rust-analysis skill_version: 2.8 -- must match SKILL.md's
 # skill_version, the repo copy, and the panel-rust-analysis line in
 # PROJECT_CANON.md. If it is out of sync with any of those, this file has
 # reverted to a stale snapshot: run from the repo clone instead of this
@@ -684,3 +684,75 @@ def make_overlay(rgba, rust_mask, color=OVERLAY_COLOR, opacity=OVERLAY_OPACITY,
         out[..., c] = np.where(rust_mask, color[c], out[..., c])
     out[..., 3] = np.where(rust_mask, int(opacity * 255), rgba[..., 3])
     return out
+
+
+# --- Warm-lit / high-shadow cast-iron calibration (v1.8) ------------------
+# Derived on AN26_0409 B-set (24h IEC 60068-2-30), gray cast iron, against
+# ground truth supplied by the operator: 5B_2 and 6B_2 rust-free, 4B_1,
+# 4B_2, 5B_1, 6B_1 heavily rusted.
+#
+# WHY v1.7 FAILS ON THIS BATCH, in both directions (measured):
+#   - 6B_2 (rust-free) read 53.2%. 50.6 of those 53.2 pp are NOT rust-hued
+#     (hue p50 196 deg, blue) at val p50 0.11 -- the deeply shadowed half
+#     of the disc. sat = (max-min)/max is numerically unstable as max
+#     approaches 0, so a saturation-only clean test reads shadow as
+#     corrosion. 50.7% of that coupon is coloured-but-near-black.
+#   - 6B_1 (heavily rusted) read 5.8%. Its corrosion is fine pitting at
+#     sat p50 0.19, under v1.7's 0.28 cutoff, and the 0.5% minimum-
+#     component filter then removed a further 17.0 pp of genuine pit
+#     clusters.
+#
+# HUE is the discriminator that holds here, and it agrees with the
+# populations recorded in the v1.7 note (corroded ~27 deg, clean iron
+# 48-60 deg). Measured on lit (val>0.18), coloured (sat>0.14) pixels:
+#   rusted coupons: hue p50 19-27 deg
+#   clean coupons:  hue p50 38-39 deg  (the burnished band)
+#   shadow, both:   hue p50 ~190 deg   (excluded by the value floor)
+#
+# CUTOFF SELECTION: 3-way sweep, hue_max 28-36 x sat_min 0.12-0.18 x
+# val_min 0.14-0.22, scored on separation between the two declared-clean
+# and four declared-rusted coupons, with the two A-set clean coupons
+# (6A_1, 6A_2, photographed under the DIFFERENT A-set lighting) held out
+# as an independent check. hue_max is the sensitive term:
+#   hue_max 28 -> clean 0.00/0.01, held-out clean 0.03/0.19, rusted 34.7-57.3
+#   hue_max 30 -> clean 0.11/0.24, held-out clean 0.93/0.58, rusted 45.3-63.5
+#   hue_max 32 -> clean 0.43/0.70, held-out clean 3.16/0.91, rusted 50.2-68.9
+# 30 is the knee: it recovers ~9 pp more rust than 28 while every one of
+# the four clean references stays under 1%. Past 30 the held-out clean
+# coupon climbs fast for a smaller rust gain.
+#
+# The 0.5% speck filter (RUST_MIN_AREA_FRAC) is deliberately NOT applied:
+# on fine-pit corrosion it deletes real rust (17.0 pp on 6B_1). Rim
+# correction IS kept.
+#
+# NOT interchangeable with v1.7 -- numbers from the two are not
+# comparable, and v1.8 is selected EXPLICITLY (CLASSIFIER = "v1.8"), never
+# by auto-routing, because lighting is not safely detectable from a
+# possibly-fully-corroded coupon. Re-measure against a known-clean coupon
+# if lighting, polish grit or camera changes.
+RUST_HUE_MIN_WARM = 5.0
+RUST_HUE_MAX_WARM = 30.0
+RUST_SAT_MIN_WARM = 0.14
+RUST_VAL_MIN_WARM = 0.18
+
+
+def classify_rust_v18(rgba, hue_min=RUST_HUE_MIN_WARM, hue_max=RUST_HUE_MAX_WARM,
+                      sat_min=RUST_SAT_MIN_WARM, val_min=RUST_VAL_MIN_WARM,
+                      rim_px=BARE_RIM_PX_CI, rim_correct=True):
+    """v1.8: FORWARD rust detection for dark cast iron photographed with
+    warm light and strong shadow. Rust must be rust-hued AND saturated AND
+    above a value floor; the value floor is what excludes the near-black
+    region where saturation carries no information. See the calibration
+    note above for the measured v1.7 failure this replaces.
+    """
+    pm = rgba[..., 3] > 10
+    hue, sat, val = hsv_channels(rgba[..., :3])
+    rust_mask = (pm & (hue >= hue_min) & (hue <= hue_max)
+                 & (sat > sat_min) & (val > val_min))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    rust_mask = cv2.morphologyEx(rust_mask.astype(np.uint8),
+                                 cv2.MORPH_OPEN, k).astype(bool)
+    if rim_correct:
+        rust_mask = _rim_correct(rust_mask, pm, rim_px=rim_px)
+    pct = rust_mask.sum() / max(pm.sum(), 1) * 100
+    return rust_mask, pct, pm

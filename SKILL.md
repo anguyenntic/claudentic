@@ -1,7 +1,7 @@
 ---
 name: panel-rust-analysis
 description: "Full pipeline for corrosion/rust test specimen photos -- flat panels (Q-panels) AND round or machined coupons, on steel or cast iron: straighten each specimen, orient any mounting hole to the top, classify rust pixels, generate rust-overlay images, and assemble everything into a PowerPoint deck. Use this whenever the user uploads transparent-background (RGBA, pre-background-removed) panel or coupon photos -- each containing 1-3 specimens side by side -- and asks to run the 'usual' analysis, 'panel straighten and rust analysis', a coupon or button rust analysis, 'do it the same as before', or similar. Also use for follow-up requests on an existing batch: reorienting panels, adjusting the rust-classification threshold, building a diagnostic overlay to sanity-check the % against a visual impression, or re-running with a different classifier. If the input images still have their original background (not yet transparent), use the panel-bg-removal skill first."
-skill_version: "2.7"
+skill_version: "2.8"
 ---
 
 ## VERSION CHECK -- do this before anything else in this skill
@@ -510,6 +510,64 @@ that coupon's 85.1% is very likely an undercount and the apparent 5A_1 vs
 sample difference. Flag this rather than treating a v1.7 number as exact
 in the 80-95% band. Values near 0 and near 100 are robust.
 
+### v1.8 (`classify_rust_v18`) -- dark cast iron under warm/shadowed lighting
+
+**Selected explicitly via `CLASSIFIER = "v1.8"` in `run_all.py`. NOT
+auto-routed** -- `classify_rust_auto` still returns v1.7 for
+`substrate="cast_iron"`, because lighting condition is not safely
+detectable from a possibly-fully-corroded coupon, and silently switching
+methods between batches would make numbers incomparable without anyone
+noticing.
+
+Why it exists (measured, AN26_0409 B-set, 24h IEC 60068-2-30, same gray
+cast iron and prep as the A-set): **v1.7's saturation-only clean test
+fails in BOTH directions when the photography has strong shadow.**
+
+- **False positive on shadow.** 6B.2, operator-confirmed rust-free, read
+  53.2% under v1.7. 50.6 of those 53.2 pp were not rust-hued at all (hue
+  p50 196 deg, i.e. blue) at val p50 0.11. `sat = (max-min)/max` becomes
+  numerically unstable as `max` approaches zero, so the deeply shadowed
+  half of a disc reads as highly saturated and v1.7 calls it corrosion.
+  50.7% of that coupon is coloured-but-near-black.
+- **False negative on fine pitting.** 6B.1, heavily rusted, read 5.8%.
+  Its corrosion is fine pitting at sat p50 0.19, below v1.7's 0.28
+  cutoff, and the 0.5% minimum-component filter then deleted a further
+  17.0 pp of genuine pit clusters.
+
+**Method**: forward detection rather than inverse. A pixel is rust if it
+is rust-hued (5-30 deg) AND saturated (>0.14) AND above a value floor
+(>0.18). The value floor is the load-bearing part -- it excludes the
+near-black region where saturation carries no information. Morphological
+open plus v1.6's `_rim_correct` are retained. **The 0.5% speck filter is
+deliberately not applied** (it removes real fine-pit corrosion).
+
+Measured populations on lit (val>0.18), coloured (sat>0.14) pixels:
+
+| population | hue p50 |
+|---|---|
+| rusted coupons (4B.1, 4B.2, 5B.1, 6B.1) | 19-27 deg |
+| clean coupons (5B.2, 6B.2), burnished band | 38-39 deg |
+| shadow, both | ~190 deg (excluded by the value floor) |
+
+**Cutoff selection**: 3-way sweep (hue_max 28-36 x sat_min 0.12-0.18 x
+val_min 0.14-0.22) scored on separation between the declared-clean and
+declared-rusted coupons, with the two A-set clean coupons (6A.1, 6A.2,
+photographed under the *different* A-set lighting) held out as an
+independent check. hue_max is the sensitive term: 28 -> clean 0.00/0.01,
+held-out 0.03/0.19, rusted 34.7-57.3; 30 -> clean 0.11/0.24, held-out
+0.93/0.58, rusted 45.3-63.5; 32 -> clean 0.43/0.70, held-out 3.16/0.91.
+30 is the knee -- it recovers ~9 pp more rust than 28 while all four
+clean references stay under 1%.
+
+**Known limitation -- black oxide excluded.** The dark network between
+the orange patches on the heavily corroded coupons is corrosion product
+but falls outside the hue window, so v1.8 numbers on those are
+conservative. 4B.1 at 63.5% is rust-hued coverage, not total corroded
+area. Say so rather than reporting the number as total corrosion.
+
+**v1.7 and v1.8 numbers are not comparable.** Reprocess one side before
+comparing a warm-lit batch against an A-set number.
+
 ### v1.1 (`classify_rust`) -- base method, still used as v1.3's foundation
 
 Per-panel **adaptive Otsu threshold** on the HSV saturation channel:
@@ -635,6 +693,26 @@ it's not in the current session. If versions differ, note it and consider
 reprocessing one side with the other's classifier for a clean comparison.
 
 ## History / rationale (context if asked, not required reading to run this)
+
+- **v1.8 added at skill_version 2.8** (AN26_0409 B-set, 6 single round
+  cast-iron coupons, 24h IEC 60068-2-30). Second lighting condition on
+  the same substrate v1.7 was written for. Caught in visual QA before any
+  number was delivered: v1.7 reported 53.2% on a coupon the operator
+  confirmed rust-free and 5.8% on one he confirmed heavily rusted. Root
+  cause was not a bad threshold but saturation being undefined in shadow
+  (see the v1.8 section). Selected explicitly, never auto-routed.
+
+- **Working files were modified mid-session during this batch.** The
+  working copy of `pipeline.py` gained a `classify_rust_v18` and
+  `run_all.py` was switched to `CLASSIFIER = "v1.8"` between two runs,
+  with neither change made by the assistant nor present upstream. Its
+  calibration comment asserted operator-declared ground truth that the
+  operator had not given at that point. It was discarded, the working
+  directory rebuilt from a fresh clone, and the classifier re-derived
+  from ground truth the operator actually supplied. **Diff the working
+  copy against an independent fresh clone before trusting a run, not
+  just at setup** -- the version check at the start of a session does not
+  cover a change made during it.
 
 - **Replicate grouping (`SET_FILES`) added at skill_version 2.7.** The
   pipeline assumed one image file per set, so a set whose replicates

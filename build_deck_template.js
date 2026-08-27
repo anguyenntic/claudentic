@@ -1,5 +1,5 @@
 /*
- * panel-rust-analysis skill_version: 2.7 -- must match SKILL.md's
+ * panel-rust-analysis skill_version: 2.8 -- must match SKILL.md's
  * skill_version, the repo copy, and the panel-rust-analysis line in
  * PROJECT_CANON.md. If it is out of sync with any of those, this file has
  * reverted to a stale snapshot: run from the repo clone instead of this
@@ -55,24 +55,31 @@ const path = require("path");
 
 // ---- EDIT THESE FOR THE CURRENT BATCH ----
 const PROJECT = "AN26_0409";
-const SETS = ["9B", "9D", "10B", "10D"]; // per-set slide order
+const SETS = ["4B.1", "4B.2", "5B.1", "5B.2", "6B.1", "6B.2"]; // per-set slide order
 const TIMEPOINT = "24h";
 // Specimen noun. "Panel" for Q-panels, "Coupon" for round/machined coupons.
 // Used for image captions, grouped-slide titles and summary column headers.
 // Do NOT derive this from substrate -- steel coupons and cast iron panels
 // both exist. Comes from the intake questions (see SKILL.md "Intake").
-const SPECIMEN = "Panel";
+const SPECIMEN = "Coupon";
 // Test method, used in the output filename. "B117" is salt fog; a humidity
 // cabinet run is "D1748", cyclic damp heat "IEC60068". Was hardcoded to
 // B117 before 2.7, which silently mislabeled every non-salt-fog batch.
-const TEST_METHOD = "B117";
+const TEST_METHOD = "IEC60068";
 // Optional short italic description under each set's column header on
 // grouped slides (e.g. a formulation summary). Leave {} to omit -- but
 // NEVER invent or infer this text; only fill it in with exact wording the
 // user gave you for that batch. If only some sets have one, the row still
 // reserves vertical space for every set in the group so columns stay
 // row-aligned (see hasDescriptions below).
-const DESCRIPTIONS = {};
+const DESCRIPTIONS = {
+  "4B.1": "4A.1 repolished",
+  "4B.2": "New polished button, not tested prior",
+  "5B.1": "5A button, just repolished and cleaned",
+  "5B.2": "5A button, coated in 34CD lab made",
+  "6B.1": "6A button, just cleaned and repolished",
+  "6B.2": "6A button, coated in 34CD lab made",
+};
 // Optional test-conditions slide, added FIRST (before the grouped slides).
 // Ordered [label, value] pairs from the intake questions -- exposure, test
 // method and parameters, substrate, specimen geometry, preparation. Leave
@@ -81,7 +88,13 @@ const DESCRIPTIONS = {};
 // slide that house style excludes -- it carries the run's conditions,
 // which are otherwise recorded nowhere in the deck and are unrecoverable
 // from the images later (added at skill_version 2.7).
-const METHODS = [];
+const METHODS = [
+  ["Exposure", "24 h"],
+  ["Test method", "IEC chamber (IEC 60068-2-30 cyclic damp heat)"],
+  ["Substrate", "Gray cast iron (confirmed by substrate detection on all six coupons)"],
+  ["Specimen", "Round coupons (buttons), one per image, no straightening applied"],
+  ["Rust classifier", "v1.8, calibrated on this batch against 5B.2 and 6B.2 as operator-declared rust-free"],
+];
 // -------------------------------------------
 
 const results = JSON.parse(fs.readFileSync("full_results.json", "utf8"));
@@ -418,10 +431,10 @@ function buildSummarySlide(sets) {
   // hardcoded to the steel style before 2.7 and silently mislabeled every
   // cast-iron deck, which is exactly the kind of caption that gets
   // believed later. See pipeline.py OVERLAY_COLOR / OVERLAY_COLOR_CI.
-  const usesCI = [...methodsUsed].some((m) => m === "v1.7");
-  const mixedOverlay = usesCI && [...methodsUsed].some((m) => m !== "v1.7");
+  const usesCI = [...methodsUsed].some((m) => m === "v1.7" || m === "v1.8");
+  const mixedOverlay = usesCI && [...methodsUsed].some((m) => m !== "v1.7" && m !== "v1.8");
   const overlayNote = mixedOverlay
-    ? "Overlay: soft red (255,85,85) at 45% blended on v1.7 sets, pure red (255,0,0) at 90% elsewhere."
+    ? "Overlay: soft red (255,85,85) at 45% blended on v1.7/v1.8 sets, pure red (255,0,0) at 90% elsewhere."
     : usesCI
       ? "Overlay: soft red (255,85,85) at 45%, blended."
       : "Overlay: pure red (255,0,0) at 90% opacity.";
