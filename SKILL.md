@@ -1,7 +1,7 @@
 ---
 name: panel-rust-analysis
 description: "Full pipeline for corrosion/rust test specimen photos -- flat panels (Q-panels) AND round or machined coupons, on steel or cast iron: straighten each specimen, orient any mounting hole to the top, classify rust pixels, generate rust-overlay images, and assemble everything into a PowerPoint deck. Use this whenever the user uploads transparent-background (RGBA, pre-background-removed) panel or coupon photos -- each containing 1-3 specimens side by side -- and asks to run the 'usual' analysis, 'panel straighten and rust analysis', a coupon or button rust analysis, 'do it the same as before', or similar. Also use for follow-up requests on an existing batch: reorienting panels, adjusting the rust-classification threshold, building a diagnostic overlay to sanity-check the % against a visual impression, or re-running with a different classifier. If the input images still have their original background (not yet transparent), use the panel-bg-removal skill first."
-skill_version: "2.9"
+skill_version: "2.10"
 ---
 
 ## VERSION CHECK -- do this before anything else in this skill
@@ -184,7 +184,15 @@ missing, in one batched message**:
    chamber.** A water-fog run (D1735) usually means wet and a damp-heat
    run usually means less so, but a dried 1735 panel does not want v1.9
    (it would undercount) and a wet IEC panel does. Ask.
-7. **What each set label means** -- e.g. what distinguishes 5A from 6A.
+7. **Whether they want significance testing** between sets added to the
+   deck (added at 2.10). Ask; do NOT add it by default. A p-value on a
+   slide gets read as a verdict on a coating, and at the replicate counts
+   this project runs (n=3 controls, n=5 coated) the test is underpowered
+   enough that "not significant" usually means "not demonstrated", not
+   "equivalent". If they say yes, run `stats_analysis.py` and set
+   `STATS = true`. If they decline, leave the slide out entirely rather
+   than including it unlabelled.
+8. **What each set label means** -- e.g. what distinguishes 5A from 6A.
    This is the one that most improves the deck and the one most often
    skipped. Answers go verbatim into `DESCRIPTIONS`, keyed by set label.
 
@@ -685,22 +693,26 @@ for it by name or explicitly requests it after you flag that v1.3 looks
 like it might be undercounting. Takes only `rgba` as input; returns
 `(rust_mask, pct, pm)`.
 
-**Overlay convention is per-substrate as of 2.7**, selected in
-`run_all.py` from the method actually used, not from a global setting:
+**Overlay convention is ONE STYLE for every substrate, method and chamber
+as of 2.10**: soft red `(255, 85, 85)` at 45%, **blended into** the
+specimen pixels rather than replacing them, so corrosion morphology reads
+through. Set in `pipeline.py` as `OVERLAY_COLOR`/`OVERLAY_OPACITY`;
+`run_all.py` no longer branches on the classifier.
 
-- **Steel (v1.1-v1.6)**: pure red `(255, 0, 0)` at 90% opacity,
-  replacing the pixel. Unchanged since 1.0 -- kept so decks for existing
-  steel batches stay visually comparable with ones already delivered.
-- **Cast iron (v1.7, v1.8) and wet steel (v1.9)**: soft red
-  `(255, 85, 85)` at 45%, **blended into** the panel pixels rather than
-  replacing them, so corrosion morphology reads through. Near-fully-
-  corroded specimens otherwise render as featureless solid slabs -- a
-  99.1% and a 94.6% coupon look identical and neither shows any
-  structure. Originally scoped to cast iron; **extended to v1.9 at 2.9 on
-  the operator's request**, for the same reason on wet steel controls.
-  The original scoping caveat still holds in one respect: a v1.9 deck is
-  **not visually comparable** with steel decks already delivered under
-  the pure-red style, so say so when handing one over.
+History of the change: introduced at 2.7 for cast iron, where a
+near-fully-corroded coupon renders as a featureless disc under flat red (a
+99.1% and a 94.6% coupon look identical); extended to wet steel at 2.9;
+made universal at 2.10 on the operator's decision, since the same argument
+applies to a 90%-rusted steel control and one project-wide style beats
+per-method styling.
+
+`OVERLAY_COLOR_LEGACY` / `OVERLAY_OPACITY_LEGACY` (flat red at 90%) and
+`LEGACY_OVERLAY = True` in `run_all.py` are retained ONLY to reproduce a
+specific pre-2.10 steel deck on request.
+
+**Decks built at 2.10+ are not visually comparable with steel decks
+delivered before it.** Say so when handing over a rebuild. The numbers are
+unaffected -- this is presentation only.
 
 ### Known limitations (be upfront about these if asked)
 
@@ -765,6 +777,16 @@ it's not in the current session. If versions differ, note it and consider
 reprocessing one side with the other's classifier for a clean comparison.
 
 ## History / rationale (context if asked, not required reading to run this)
+
+- **Universal overlay and optional significance testing added at
+  skill_version 2.10.** The blended overlay stopped being per-substrate
+  and became the single house style (see Deck house style above). Separately,
+  `stats_analysis.py` was added with a paired intake question, deliberately
+  opt-in: the risk with a statistics slide is not that the arithmetic is
+  wrong but that a reader treats "not significant" as "equivalent" when the
+  real cause is n=3 vs n=5. The slide carries that caveat in its footnote
+  and the module refuses to test two effectively-clean sets against each
+  other.
 
 - **v1.9, the `IMG_H` floor fix and the block layout added at
   skill_version 2.9** (AN26_0502, steel Q-panels, D1735 water fog and IEC

@@ -1,5 +1,5 @@
 """
-panel-rust-analysis skill_version: 2.9 -- must match SKILL.md's
+panel-rust-analysis skill_version: 2.10 -- must match SKILL.md's
 skill_version, the repo copy, and the panel-rust-analysis line in
 PROJECT_CANON.md. If it is out of sync with any of those, this file has
 reverted to a stale snapshot: run from the repo clone instead of this
@@ -41,7 +41,7 @@ Adjust the `fname` line if the project's naming differs.
 import os, json
 from pipeline import (load_rgba, get_panels, straighten_panel, make_overlay,
                       OVERLAY_COLOR, OVERLAY_OPACITY,
-                      OVERLAY_COLOR_CI, OVERLAY_OPACITY_CI,
+                      OVERLAY_COLOR_LEGACY, OVERLAY_OPACITY_LEGACY,
                       classify_rust, classify_rust_v13, classify_rust_v14,
                       classify_rust_v15, classify_rust_v16, classify_rust_v17,
                       classify_rust_v18, classify_rust_v19,
@@ -83,6 +83,9 @@ SUBSTRATE = "cast_iron"       # "steel" (bright Q-panels) | "cast_iron" (dark
                               # the kind of silent guess that produces 99.9%
                               # rust on a clean coupon. See pipeline.py's
                               # BARE_SAT_MAX_CI calibration note.
+LEGACY_OVERLAY = False        # True only to reproduce a pre-2.10 steel deck
+                              # in the old flat red; new work uses the house
+                              # blended style on every substrate.
 STRAIGHTEN = False            # set False for pre-cropped single-panel batches
                               # where the user asked for no rotation
 # -------------------------------------------
@@ -145,17 +148,13 @@ for lab in LABELS:
         straight_img.save(straight_rel)
 
         rust_mask, pct, method = _classify(straight)
-        # Overlay style follows the METHOD, not a global setting. The soft
-        # blended red exists because a near-fully-corroded specimen renders
-        # as a featureless slab under the 90% flat red. Introduced for cast
-        # iron (v1.7/v1.8); extended to v1.9 at 2.9 on request, for the same
-        # reason on wet steel controls. v1.1-v1.6 keep the original pure red
-        # so previously-delivered steel decks stay comparable -- which means
-        # a v1.9 deck is NOT visually comparable with those older decks.
-        if method in ("v1.7", "v1.8", "v1.9"):
-            ov_color, ov_op, ov_blend = OVERLAY_COLOR_CI, OVERLAY_OPACITY_CI, True
+        # ONE overlay style for every method and substrate since 2.10
+        # (see pipeline.py OVERLAY_COLOR). Set LEGACY_OVERLAY = True at the
+        # top only to reproduce a pre-2.10 steel deck in the old flat red.
+        if LEGACY_OVERLAY:
+            ov_color, ov_op, ov_blend = OVERLAY_COLOR_LEGACY, OVERLAY_OPACITY_LEGACY, False
         else:
-            ov_color, ov_op, ov_blend = OVERLAY_COLOR, OVERLAY_OPACITY, False
+            ov_color, ov_op, ov_blend = OVERLAY_COLOR, OVERLAY_OPACITY, True
         overlay = make_overlay(straight, rust_mask, color=ov_color,
                                opacity=ov_op, blend=ov_blend)
         overlay_img = Image.fromarray(overlay, mode="RGBA")

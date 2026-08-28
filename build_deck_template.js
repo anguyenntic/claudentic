@@ -1,5 +1,5 @@
 /*
- * panel-rust-analysis skill_version: 2.9 -- must match SKILL.md's
+ * panel-rust-analysis skill_version: 2.10 -- must match SKILL.md's
  * skill_version, the repo copy, and the panel-rust-analysis line in
  * PROJECT_CANON.md. If it is out of sync with any of those, this file has
  * reverted to a stale snapshot: run from the repo clone instead of this
@@ -91,6 +91,12 @@ const METHODS = [];
 //                0.72in rows). Puts every replicate on one slide AND renders
 //                them larger, because it spends the slide's slack axis
 //                (width) instead of its tight one.
+// Optional significance-testing slide per timepoint (added 2.10). Set true
+// ONLY when the person asked for it (SKILL.md Intake question 8) and
+// stats_analysis.py has written stats.json. Never add it unasked: it
+// invites reading a p-value as a verdict on a coating, and at n=3 vs n=5
+// a non-significant result usually means underpowered, not equivalent.
+const STATS = false;
 const LAYOUT = "columns";
 const BLOCKS_PER_ROW = 2;
 // -------------------------------------------
@@ -463,6 +469,65 @@ if (LAYOUT === "blocks") {
   }
 }
 
+
+// ---------- Statistics slide (optional, added at 2.10) ----------
+// Reads stats.json from stats_analysis.py: pairwise Welch t-tests,
+// Holm-corrected within the timepoint, with Hedges' g. Placed immediately
+// after the summary table for that timepoint.
+//
+// The caveat line at the bottom is NOT decoration -- with n=3 controls and
+// n=5 coated sets this test is badly underpowered, and a reader who sees
+// "not significant" without it will read equivalence that the data does
+// not support. Keep it on the slide.
+function buildStatsSlide(tp) {
+  const all = JSON.parse(fs.readFileSync("stats.json", "utf8"));
+  const rows0 = all.timepoints[tp];
+  if (!rows0 || rows0.length === 0) return;
+  const slide = pres.addSlide();
+  slide.background = { color: "FFFFFF" };
+  addTitle(slide, `Significance Testing \u2014 ${tp}`);
+  slide.addShape(pres.ShapeType.line, {
+    x: 0.5, y: 0.92, w: SLIDE_W - 1.0, h: 0, line: { color: LIGHT_LINE, width: 1 },
+  });
+
+  const head = ["Comparison", "Mean A", "Mean B", "Difference", "p (adj)", "Hedges' g", "Result"]
+    .map((h) => ({ text: h, options: { bold: true, fill: { color: "F3F4F6" }, color: DARK, fontFace: FONT } }));
+  const rows = [head];
+  for (const r of rows0) {
+    const diff = (r.mean_a - r.mean_b);
+    let verdict, vcolor;
+    if (r.note) { verdict = "not meaningful"; vcolor = GRAY; }
+    else if (r.p_adj === null) { verdict = "no test"; vcolor = GRAY; }
+    else if (r.significant) { verdict = "significant"; vcolor = RED; }
+    else { verdict = "not shown"; vcolor = GRAY; }
+    rows.push([
+      { text: `${r.a} vs ${r.b}`, options: { bold: true, color: DARK, fontFace: FONT } },
+      { text: `${r.mean_a.toFixed(1)}%`, options: { color: GRAY, fontFace: FONT } },
+      { text: `${r.mean_b.toFixed(1)}%`, options: { color: GRAY, fontFace: FONT } },
+      { text: `${diff >= 0 ? "+" : ""}${diff.toFixed(1)} pp`, options: { color: GRAY, fontFace: FONT } },
+      { text: r.p_adj === null ? "\u2014" : (r.p_adj < 0.0001 ? "<0.0001" : r.p_adj.toFixed(4)),
+        options: { color: GRAY, fontFace: FONT } },
+      { text: (r.g === null || isNaN(r.g)) ? "\u2014" : `${r.g >= 0 ? "+" : ""}${r.g.toFixed(1)}`,
+        options: { color: GRAY, fontFace: FONT } },
+      { text: verdict, options: { color: vcolor, bold: verdict === "significant", fontFace: FONT } },
+    ]);
+  }
+  slide.addTable(rows, {
+    x: 0.7, y: 1.25, w: SLIDE_W - 1.4, h: Math.min(4.6, 0.45 + 0.42 * rows.length),
+    fontSize: 12, fontFace: FONT, color: GRAY,
+    border: { type: "solid", color: LIGHT_LINE, pt: 1 },
+    align: "center", valign: "middle", autoPage: false,
+  });
+  slide.addText(
+    `${all.test}, \u03b1 = ${all.alpha}. "Not shown" means the difference was not demonstrated at this sample size \u2014 `
+    + `NOT that the sets perform the same. With n=3 controls and n=5 coated sets this test has low power. `
+    + `Hedges' g is the size of the difference; p is the confidence it is not noise. Read both. `
+    + `Replicates are panels within one chamber run, so run-to-run variation is not captured.`,
+    { x: 0.5, y: SLIDE_H - 1.15, w: SLIDE_W - 1.0, h: 0.6, fontSize: 9, italic: true, color: GRAY, fontFace: FONT }
+  );
+  addFooter(slide);
+}
+
 // ---------- Summary statistics slide (required, added last) ----------
 // Rust % per panel per set, plus Average/Std Dev/RSD per set. Canonical
 // palette/font, matches the rest of the deck -- this is a real deck slide
@@ -538,13 +603,10 @@ function buildSummarySlide(sets) {
   // hardcoded to the steel style before 2.7 and silently mislabeled every
   // cast-iron deck, which is exactly the kind of caption that gets
   // believed later. See pipeline.py OVERLAY_COLOR / OVERLAY_COLOR_CI.
-  const usesCI = [...methodsUsed].some((m) => m === "v1.7" || m === "v1.8" || m === "v1.9");
-  const mixedOverlay = usesCI && [...methodsUsed].some((m) => m !== "v1.7" && m !== "v1.8" && m !== "v1.9");
-  const overlayNote = mixedOverlay
-    ? "Overlay: soft red (255,85,85) at 45% blended on v1.7/v1.8/v1.9 sets, pure red (255,0,0) at 90% elsewhere."
-    : usesCI
-      ? "Overlay: soft red (255,85,85) at 45%, blended."
-      : "Overlay: pure red (255,0,0) at 90% opacity.";
+  // One overlay style for every method since 2.10 (pipeline.py
+  // OVERLAY_COLOR). Decks built before 2.10 used flat red on steel and are
+  // not visually comparable with these.
+  const overlayNote = "Overlay: soft red (255,85,85) at 45%, blended.";
   slide.addText(
     `${methodNote} ${overlayNote}`,
     { x: 0.5, y: SLIDE_H - 0.95, w: SLIDE_W - 1.0, h: 0.4, fontSize: 9, italic: true, color: GRAY, fontFace: FONT }
@@ -553,6 +615,7 @@ function buildSummarySlide(sets) {
 }
 
 buildSummarySlide(SETS);
+if (STATS) buildStatsSlide(TIMEPOINT);
 
 pres.writeFile({ fileName: `${PROJECT}_${SETS[0]}-${SETS[SETS.length - 1]}_${TIMEPOINT}${TEST_METHOD}.pptx` }).then(() => {
   console.log("done");

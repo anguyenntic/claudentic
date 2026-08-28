@@ -1,4 +1,4 @@
-# panel-rust-analysis skill_version: 2.9 -- must match SKILL.md's
+# panel-rust-analysis skill_version: 2.10 -- must match SKILL.md's
 # skill_version, the repo copy, and the panel-rust-analysis line in
 # PROJECT_CANON.md. If it is out of sync with any of those, this file has
 # reverted to a stale snapshot: run from the repo clone instead of this
@@ -639,36 +639,44 @@ def classify_rust_auto(rgba, majority_cut=50.0, substrate="steel"):
     return rust_mask, pct, pm, "v1.5"
 
 
-# Steel Q-panel house style (unchanged since 1.0): pure red, 90%. Kept as
-# the default so decks for existing steel batches stay visually comparable
-# with ones already delivered.
-OVERLAY_COLOR = (255, 0, 0)
-OVERLAY_OPACITY = 0.9
+# HOUSE OVERLAY STYLE, all substrates and all chambers (2.10).
+# Soft red blended into the specimen rather than replacing it, so corrosion
+# morphology reads through. Introduced for cast iron at 2.7 because a
+# near-fully-corroded coupon renders as a featureless disc under flat red,
+# extended to wet steel at 2.9, and made universal at 2.10 on the
+# operator's decision -- the same argument applies to a 90%-rusted steel
+# control, and one style across the project beats per-method styling.
+#
+# CONSEQUENCE, state it when handing over a rebuild: decks built at 2.10+
+# are NOT visually comparable with steel decks delivered before it. The
+# numbers are unaffected -- this is presentation only.
+OVERLAY_COLOR = (255, 85, 85)
+OVERLAY_OPACITY = 0.45
 
-# Cast-iron style (added 2.7, scoped deliberately). Near-fully-corroded
-# coupons render as a featureless solid disc under the steel style -- a
-# 99.1% coupon and a 94.6% coupon look identical and neither shows its
-# corrosion morphology. Softer red at lower opacity, blended rather than
-# replaced, keeps the texture readable. Applied only on the v1.7 path;
-# run_all.py selects it from the method actually used.
-OVERLAY_COLOR_CI = (255, 85, 85)
-OVERLAY_OPACITY_CI = 0.45
+# Pre-2.10 flat red. Retained ONLY to reproduce a specific older steel deck
+# on request; not the default, and not for new work.
+OVERLAY_COLOR_LEGACY = (255, 0, 0)
+OVERLAY_OPACITY_LEGACY = 0.9
+
+# Aliases kept so existing callers keep working; identical to the house
+# style since 2.10 made the blended overlay universal.
+OVERLAY_COLOR_CI = OVERLAY_COLOR
+OVERLAY_OPACITY_CI = OVERLAY_OPACITY
 
 
 def make_overlay(rgba, rust_mask, color=OVERLAY_COLOR, opacity=OVERLAY_OPACITY,
-                 blend=False):
+                 blend=True):
     """Draw the rust mask over a panel.
 
     Two modes, because the steel and cast-iron house styles differ (2.7):
 
-    - `blend=False` (default, steel): REPLACE the pixel with `color` and
-      set its alpha to `opacity`. This is the original 1.0 behaviour,
-      preserved byte-for-byte so decks rebuilt for existing steel batches
-      match ones already delivered. Do not "simplify" this into the blend
-      path -- blending at 0.9 looks nearly identical but is not the same
-      output, and the difference is invisible in a render.
-    - `blend=True` (cast iron): mix `color` into the pixel at `opacity`
-      and keep the panel's own alpha, so corrosion texture reads through.
+    - `blend=True` (DEFAULT since 2.10, all substrates): mix `color` into
+      the pixel at `opacity` and keep the specimen's own alpha, so
+      corrosion texture reads through.
+    - `blend=False` (pre-2.10 flat red): REPLACE the pixel with `color` and
+      set its alpha to `opacity`. Retained only to reproduce a specific
+      older steel deck. Do not "simplify" the two paths together --
+      blending at 0.9 looks nearly identical but is not the same output.
     """
     if blend:
         out = rgba.copy().astype(np.float32)
