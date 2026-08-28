@@ -1,5 +1,5 @@
 /*
- * panel-rust-analysis skill_version: 2.8 -- must match SKILL.md's
+ * panel-rust-analysis skill_version: 2.9 -- must match SKILL.md's
  * skill_version, the repo copy, and the panel-rust-analysis line in
  * PROJECT_CANON.md. If it is out of sync with any of those, this file has
  * reverted to a stale snapshot: run from the repo clone instead of this
@@ -55,31 +55,24 @@ const path = require("path");
 
 // ---- EDIT THESE FOR THE CURRENT BATCH ----
 const PROJECT = "AN26_0409";
-const SETS = ["4B.1", "4B.2", "5B.1", "5B.2", "6B.1", "6B.2"]; // per-set slide order
+const SETS = ["9B", "9D", "10B", "10D"]; // per-set slide order
 const TIMEPOINT = "24h";
 // Specimen noun. "Panel" for Q-panels, "Coupon" for round/machined coupons.
 // Used for image captions, grouped-slide titles and summary column headers.
 // Do NOT derive this from substrate -- steel coupons and cast iron panels
 // both exist. Comes from the intake questions (see SKILL.md "Intake").
-const SPECIMEN = "Coupon";
+const SPECIMEN = "Panel";
 // Test method, used in the output filename. "B117" is salt fog; a humidity
 // cabinet run is "D1748", cyclic damp heat "IEC60068". Was hardcoded to
 // B117 before 2.7, which silently mislabeled every non-salt-fog batch.
-const TEST_METHOD = "IEC60068";
+const TEST_METHOD = "B117";
 // Optional short italic description under each set's column header on
 // grouped slides (e.g. a formulation summary). Leave {} to omit -- but
 // NEVER invent or infer this text; only fill it in with exact wording the
 // user gave you for that batch. If only some sets have one, the row still
 // reserves vertical space for every set in the group so columns stay
 // row-aligned (see hasDescriptions below).
-const DESCRIPTIONS = {
-  "4B.1": "4A.1 repolished",
-  "4B.2": "New polished button, not tested prior",
-  "5B.1": "5A button, just repolished and cleaned",
-  "5B.2": "5A button, coated in 34CD lab made",
-  "6B.1": "6A button, just cleaned and repolished",
-  "6B.2": "6A button, coated in 34CD lab made",
-};
+const DESCRIPTIONS = {};
 // Optional test-conditions slide, added FIRST (before the grouped slides).
 // Ordered [label, value] pairs from the intake questions -- exposure, test
 // method and parameters, substrate, specimen geometry, preparation. Leave
@@ -88,13 +81,18 @@ const DESCRIPTIONS = {
 // slide that house style excludes -- it carries the run's conditions,
 // which are otherwise recorded nowhere in the deck and are unrecoverable
 // from the images later (added at skill_version 2.7).
-const METHODS = [
-  ["Exposure", "24 h"],
-  ["Test method", "IEC chamber (IEC 60068-2-30 cyclic damp heat)"],
-  ["Substrate", "Gray cast iron (confirmed by substrate detection on all six coupons)"],
-  ["Specimen", "Round coupons (buttons), one per image, no straightening applied"],
-  ["Rust classifier", "v1.8, calibrated on this batch against 5B.2 and 6B.2 as operator-declared rust-free"],
-];
+const METHODS = [];
+// Panel layout for the grouped slides (added at skill_version 2.9):
+//   "columns" -- canonical: one column per set, replicates stacked down it.
+//                Correct for n<=3 replicates; unchanged from 2.7.
+//   "blocks"  -- each SET is a horizontal block of its replicates, blocks
+//                arranged BLOCKS_PER_ROW across. Use when replicates per set
+//                exceed what a column can hold (n=5 collapses a column to
+//                0.72in rows). Puts every replicate on one slide AND renders
+//                them larger, because it spends the slide's slack axis
+//                (width) instead of its tight one.
+const LAYOUT = "columns";
+const BLOCKS_PER_ROW = 2;
 // -------------------------------------------
 
 const results = JSON.parse(fs.readFileSync("full_results.json", "utf8"));
@@ -213,7 +211,14 @@ function buildGroupedSlide(title, sets, kind) {
   const sumAspect = aspects.reduce((a, b) => a + b, 0);
   const widthFit = (availW - (sets.length - 1) * COL_GAP) / sumAspect;
   const heightFit = (GRID_BOTTOM - ROW1_Y) / nPanels - PER_ROW_CHROME;
-  const imgH = Math.max(IMG_H, Math.min(widthFit, heightFit));
+  // IMG_H is a floor only where it FITS. Applying it after the height bound
+  // (as 2.7-2.8 did) puts a 5-replicate column at 5 x 1.93 = 9.6in on a
+  // 7.5in slide -- the grid simply runs off the bottom. It never surfaced
+  // before because every earlier batch had n<=3. Fixed at 2.9; for n>=4
+  // prefer LAYOUT = "blocks", which keeps the panels large instead of
+  // shrinking rows to fit.
+  const imgH = heightFit >= IMG_H ? Math.max(IMG_H, Math.min(widthFit, heightFit))
+                                  : Math.min(widthFit, heightFit);
 
   const colWidths = aspects.map((a) => imgH * a);
   const GRID_W = colWidths.reduce((a, b) => a + b, 0) + (sets.length - 1) * COL_GAP;
@@ -295,6 +300,103 @@ function buildGroupedSlide(title, sets, kind) {
   addFooter(slide);
 }
 
+
+// ---------- Block grouped slide (LAYOUT = "blocks", added at 2.9) ----------
+// Column-per-set stacks replicates vertically, so n=5 needs five rows and the
+// row height collapses. Laying each SET out as a horizontal block of its
+// replicates and arranging the blocks BLOCKS_PER_ROW across uses the wide
+// axis and yields LARGER panels than either shrinking rows or splitting
+// replicates across continuation slides (measured on AN26_0502: 1.7in vs
+// 1.4in). House style is otherwise identical -- same font, palette, 15pt bold
+// set header, 9pt italic description, 9.5pt GRAY / 8pt RED bold captions, and
+// the same 0.75pt divider between blocks.
+const BLOCK_GAP_X = 0.4, BLOCK_GAP_Y = 0.22, PANEL_GAP = 0.12;
+const HDR_H = 0.30, DESC_H = 0.26, CAP_H = 0.25;
+
+function buildBlockSlide(title, sets, kind) {
+  const slide = pres.addSlide();
+  slide.background = { color: "FFFFFF" };
+  addTitle(slide, title);
+
+  const hasDescriptions = Object.keys(DESCRIPTIONS).length > 0;
+  const chrome = HDR_H + (hasDescriptions ? DESC_H : 0) + CAP_H;
+  const availW = SLIDE_W - 1.0;
+  const TOP = 1.05;
+  const availH = GRID_BOTTOM - TOP;
+  const blockRows = Math.ceil(sets.length / BLOCKS_PER_ROW);
+  const maxPanels = Math.max(...sets.map((l) => results[l].pct.length));
+
+  const aspects = sets.map((lab) => {
+    const d = sizeOf(`${lab}_t_${TIMEPOINT}/panel1_${kind === "overlay" ? "straight" : kind}.png`);
+    return d.width / d.height;
+  });
+  const maxAspect = Math.max(...aspects);
+
+  const hFit = (availH - blockRows * chrome - (blockRows - 1) * BLOCK_GAP_Y) / blockRows;
+  const blockW = (availW - (BLOCKS_PER_ROW - 1) * BLOCK_GAP_X) / BLOCKS_PER_ROW;
+  const wFit = ((blockW - (maxPanels - 1) * PANEL_GAP) / maxPanels) / maxAspect;
+  const imgH = Math.min(hFit, wFit);
+  if (imgH <= 0) throw new Error("block layout has no room -- lower BLOCKS_PER_ROW or split the sets across slides");
+
+  const gridH = blockRows * (imgH + chrome) + (blockRows - 1) * BLOCK_GAP_Y;
+  const y0 = TOP + Math.max(0, (availH - gridH) / 2);
+
+  // Block width follows EACH set's own panel aspect. Sizing every block off
+  // the widest set pushes wider blocks past the slide margin -- the same bug
+  // class as the 2.4 per-column width fix, in the other axis.
+  const bwOf = (j) => maxPanels * (imgH * aspects[j]) + (maxPanels - 1) * PANEL_GAP;
+
+  sets.forEach((lab, i) => {
+    const data = results[lab];
+    const w = imgH * aspects[i];
+    const n = data.pct.length;
+    const usedW = n * w + (n - 1) * PANEL_GAP;
+    const bw = bwOf(i);
+    const rowIdx = Math.floor(i / BLOCKS_PER_ROW);
+    const colIdx = i % BLOCKS_PER_ROW;
+    const first = rowIdx * BLOCKS_PER_ROW;
+    const blocksThisRow = Math.min(BLOCKS_PER_ROW, sets.length - first);
+    let rowW = (blocksThisRow - 1) * BLOCK_GAP_X;
+    for (let j = first; j < first + blocksThisRow; j++) rowW += bwOf(j);
+    let bx = (SLIDE_W - rowW) / 2;
+    for (let j = first; j < i; j++) bx += bwOf(j) + BLOCK_GAP_X;
+    const by = y0 + rowIdx * (imgH + chrome + BLOCK_GAP_Y);
+
+    slide.addText(lab, {
+      x: bx, y: by, w: bw, h: HDR_H,
+      fontSize: 15, bold: true, color: DARK, align: "center", fontFace: FONT, margin: 0,
+    });
+    if (hasDescriptions && DESCRIPTIONS[lab]) {
+      slide.addText(DESCRIPTIONS[lab], {
+        x: bx, y: by + 0.26, w: bw, h: DESC_H,
+        fontSize: 9, italic: true, color: DARK, align: "center", fontFace: FONT, margin: 0,
+      });
+    }
+
+    const imgY = by + HDR_H + (hasDescriptions ? DESC_H : 0);
+    const px0 = bx + (bw - usedW) / 2;   // centre a short row (e.g. n=3 control)
+    for (let p = 0; p < n; p++) {
+      const x = px0 + p * (w + PANEL_GAP);
+      slide.addImage({ path: `${lab}_t_${TIMEPOINT}/panel${p + 1}_${kind}.png`, x: x, y: imgY, w: w, h: imgH });
+      const caption = kind === "straight" ? `${SPECIMEN} ${p + 1}` : `${SPECIMEN} ${p + 1} \u2014 ${data.pct[p].toFixed(1)}%`;
+      slide.addText(caption, {
+        x: x - PANEL_GAP / 2, y: imgY + imgH + 0.03, w: w + PANEL_GAP, h: 0.22,
+        fontSize: kind === "overlay" ? 8 : 9.5,
+        color: kind === "overlay" ? RED : GRAY, bold: kind === "overlay",
+        align: "center", fontFace: FONT, margin: 0,
+      });
+    }
+    if (colIdx < blocksThisRow - 1) {
+      slide.addShape(pres.ShapeType.line, {
+        x: bx + bw + BLOCK_GAP_X / 2, y: by, w: 0, h: imgH + chrome,
+        line: { color: LIGHT_LINE, width: 0.75 },
+      });
+    }
+  });
+
+  addFooter(slide);
+}
+
 // Split into chunks if too many columns would overflow the slide width.
 // Widths vary per set (see buildGroupedSlide), so this greedily accumulates
 // columns using each set's own aspect ratio until the next one wouldn't
@@ -350,10 +452,15 @@ function buildMethodsSlide(rows) {
 
 if (METHODS.length > 0) buildMethodsSlide(METHODS);
 
-for (const chunk of chunkForWidth(SETS)) {
-  const rangeLabel = chunk.length > 1 ? `${chunk[0]}\u2013${chunk[chunk.length - 1]}` : chunk[0];
-  buildGroupedSlide(`All Sets \u2014 ${rangeLabel} \u2014 ${TIMEPOINT} \u2014 Straightened ${SPECIMEN}s`, chunk, "straight");
-  buildGroupedSlide(`All Sets \u2014 ${rangeLabel} \u2014 ${TIMEPOINT} \u2014 Rust Overlay`, chunk, "overlay");
+if (LAYOUT === "blocks") {
+  buildBlockSlide(`All Sets \u2014 ${TIMEPOINT} \u2014 Straightened ${SPECIMEN}s`, SETS, "straight");
+  buildBlockSlide(`All Sets \u2014 ${TIMEPOINT} \u2014 Rust Overlay`, SETS, "overlay");
+} else {
+  for (const chunk of chunkForWidth(SETS)) {
+    const rangeLabel = chunk.length > 1 ? `${chunk[0]}\u2013${chunk[chunk.length - 1]}` : chunk[0];
+    buildGroupedSlide(`All Sets \u2014 ${rangeLabel} \u2014 ${TIMEPOINT} \u2014 Straightened ${SPECIMEN}s`, chunk, "straight");
+    buildGroupedSlide(`All Sets \u2014 ${rangeLabel} \u2014 ${TIMEPOINT} \u2014 Rust Overlay`, chunk, "overlay");
+  }
 }
 
 // ---------- Summary statistics slide (required, added last) ----------
@@ -431,10 +538,10 @@ function buildSummarySlide(sets) {
   // hardcoded to the steel style before 2.7 and silently mislabeled every
   // cast-iron deck, which is exactly the kind of caption that gets
   // believed later. See pipeline.py OVERLAY_COLOR / OVERLAY_COLOR_CI.
-  const usesCI = [...methodsUsed].some((m) => m === "v1.7" || m === "v1.8");
-  const mixedOverlay = usesCI && [...methodsUsed].some((m) => m !== "v1.7" && m !== "v1.8");
+  const usesCI = [...methodsUsed].some((m) => m === "v1.7" || m === "v1.8" || m === "v1.9");
+  const mixedOverlay = usesCI && [...methodsUsed].some((m) => m !== "v1.7" && m !== "v1.8" && m !== "v1.9");
   const overlayNote = mixedOverlay
-    ? "Overlay: soft red (255,85,85) at 45% blended on v1.7/v1.8 sets, pure red (255,0,0) at 90% elsewhere."
+    ? "Overlay: soft red (255,85,85) at 45% blended on v1.7/v1.8/v1.9 sets, pure red (255,0,0) at 90% elsewhere."
     : usesCI
       ? "Overlay: soft red (255,85,85) at 45%, blended."
       : "Overlay: pure red (255,0,0) at 90% opacity.";

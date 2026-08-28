@@ -1,5 +1,5 @@
 """
-panel-rust-analysis skill_version: 2.8 -- must match SKILL.md's
+panel-rust-analysis skill_version: 2.9 -- must match SKILL.md's
 skill_version, the repo copy, and the panel-rust-analysis line in
 PROJECT_CANON.md. If it is out of sync with any of those, this file has
 reverted to a stale snapshot: run from the repo clone instead of this
@@ -44,14 +44,14 @@ from pipeline import (load_rgba, get_panels, straighten_panel, make_overlay,
                       OVERLAY_COLOR_CI, OVERLAY_OPACITY_CI,
                       classify_rust, classify_rust_v13, classify_rust_v14,
                       classify_rust_v15, classify_rust_v16, classify_rust_v17,
-                      classify_rust_v18,
+                      classify_rust_v18, classify_rust_v19,
                       classify_rust_auto, bare_fraction, bare_fraction_ci)
 from PIL import Image
 
 # ---- EDIT THESE FOR THE CURRENT BATCH ----
 UPLOADS_DIR = "/mnt/user-data/uploads"
 PREFIX = "AN26_0409"          # project/sample prefix used in filenames
-LABELS = ["4B.1", "4B.2", "5B.1", "5B.2", "6B.1", "6B.2"]   # set/condition labels
+LABELS = ["4A", "5A", "6A"]   # set/condition labels
 TIMEPOINT = "24h"
 MAX_PANELS = 1                # one round coupon per image
 MAX_PANELS_OVERRIDE = {}
@@ -66,12 +66,15 @@ MAX_PANELS_OVERRIDE = {}
 # makes Average/Std Dev/RSD meaningful on the summary slide; listing them
 # as separate LABELS silently reports n=1 for everything. Leave {} to use
 # the default one-file-per-label convention.
-SET_FILES = {
-    "4B.1": ["AN26_0409-4B_1.png"], "4B.2": ["AN26_0409-4B_2.png"],
-    "5B.1": ["AN26_0409-5B_1.png"], "5B.2": ["AN26_0409-5B_2.png"],
-    "6B.1": ["AN26_0409-6B_1.png"], "6B.2": ["AN26_0409-6B_2.png"],
-}
-CLASSIFIER = "v1.8"           # "auto" | "v1.7" | "v1.5" | "v1.6" | "v1.3" | "v1.4" | "v1.1"
+SET_FILES = {}
+CLASSIFIER = "auto"           # "auto" | "v1.9" | "v1.8" | "v1.7" | "v1.6" |
+                              #   "v1.5" | "v1.3" | "v1.4" | "v1.1"
+                              # v1.8: dark cast iron, warm/shadowed lighting
+                              # v1.9: steel photographed WET (straight out of
+                              #   the cabinet, water still on the panel). Keyed
+                              #   to the PHOTOGRAPHY, not the chamber -- a
+                              #   dried 1735 panel does not want v1.9 and a wet
+                              #   IEC panel does. Ask; see SKILL.md "Intake".
 SUBSTRATE = "cast_iron"       # "steel" (bright Q-panels) | "cast_iron" (dark
                               # machined coupons). Consumed by "auto". This is
                               # EXPLICIT on purpose: the clean-metal signature
@@ -93,7 +96,7 @@ def _classify(arr):
     fn = {"v1.1": classify_rust, "v1.3": classify_rust_v13,
           "v1.4": classify_rust_v14, "v1.5": classify_rust_v15,
           "v1.6": classify_rust_v16, "v1.7": classify_rust_v17,
-          "v1.8": classify_rust_v18}[CLASSIFIER]
+          "v1.8": classify_rust_v18, "v1.9": classify_rust_v19}[CLASSIFIER]
     mask, pct, pm = fn(arr)
     return mask, pct, CLASSIFIER
 
@@ -142,10 +145,14 @@ for lab in LABELS:
         straight_img.save(straight_rel)
 
         rust_mask, pct, method = _classify(straight)
-        # Overlay style follows the METHOD, not a global setting: cast-iron
-        # (v1.7) panels get the soft blended red, steel keeps the original
-        # pure red so previously-delivered decks stay comparable.
-        if method in ("v1.7", "v1.8"):
+        # Overlay style follows the METHOD, not a global setting. The soft
+        # blended red exists because a near-fully-corroded specimen renders
+        # as a featureless slab under the 90% flat red. Introduced for cast
+        # iron (v1.7/v1.8); extended to v1.9 at 2.9 on request, for the same
+        # reason on wet steel controls. v1.1-v1.6 keep the original pure red
+        # so previously-delivered steel decks stay comparable -- which means
+        # a v1.9 deck is NOT visually comparable with those older decks.
+        if method in ("v1.7", "v1.8", "v1.9"):
             ov_color, ov_op, ov_blend = OVERLAY_COLOR_CI, OVERLAY_OPACITY_CI, True
         else:
             ov_color, ov_op, ov_blend = OVERLAY_COLOR, OVERLAY_OPACITY, False

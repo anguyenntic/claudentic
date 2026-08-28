@@ -1,4 +1,4 @@
-# panel-rust-analysis skill_version: 2.8 -- must match SKILL.md's
+# panel-rust-analysis skill_version: 2.9 -- must match SKILL.md's
 # skill_version, the repo copy, and the panel-rust-analysis line in
 # PROJECT_CANON.md. If it is out of sync with any of those, this file has
 # reverted to a stale snapshot: run from the repo clone instead of this
@@ -754,5 +754,92 @@ def classify_rust_v18(rgba, hue_min=RUST_HUE_MIN_WARM, hue_max=RUST_HUE_MAX_WARM
                                  cv2.MORPH_OPEN, k).astype(bool)
     if rim_correct:
         rust_mask = _rim_correct(rust_mask, pm, rim_px=rim_px)
+    pct = rust_mask.sum() / max(pm.sum(), 1) * 100
+    return rust_mask, pct, pm
+
+
+# --- Wet-exposure steel calibration (v1.9, AN26_0502) --------------------
+# Steel panels photographed WET, straight out of a water-fog cabinet
+# (D1735). Condensation covers the whole panel, and the film of water over
+# clean metal carries a weak warm tint that lands inside the rust hue
+# window at low saturation. v1.3's droplet defences (Stage 1 hue + 0.15
+# saturation floor, round-blob rejection) handle scattered droplets on a
+# dry panel; they do not handle a panel that is uniformly wet.
+#
+# MEASURED (3B t=48h panel 4, operator-identified false positive region):
+#   flagged pixels in the wet region: hue p50 30.0, sat p50 0.190,
+#     86% below sat 0.30
+#   flagged pixels in the genuinely rusted band: hue p50 37.7, sat p50 0.316
+# The adaptive Otsu threshold had bottomed out at v1.3's 0.22 floor, and
+# the two growth stages (floors 0.15 and 0.16) then added 11.8 pp on top.
+#
+# CUTOFF SELECTION: floors swept together against the operator-identified
+# wet region, the known-rusted controls, and the 2h coated panels (visually
+# clean). base/stage1/stage2:
+#   0.22/0.15/0.16 (v1.3) -> wet region 26.4% | Ctrl 48h 94.0 | Ctrl 144h 82.4
+#   0.26/0.20/0.20        -> wet region  6.2% | Ctrl 48h 93.7 | Ctrl 144h 82.2
+#   0.28/0.22/0.22        -> wet region  5.1% | Ctrl 48h 93.5 | Ctrl 144h 82.1
+#   0.32/0.26/0.26        -> wet region  3.5% | Ctrl 48h 91.8 | Ctrl 144h 81.7
+# 0.28/0.22/0.22 is the knee: it removes ~80% of the false positive for
+# 0.5 pp off the rusted controls. Past it the controls start paying.
+#
+# Select EXPLICITLY (CLASSIFIER = "v1.9"). Not auto-routed: whether panels
+# were photographed wet is a fact about the photography, not something
+# recoverable from the pixels. Numbers are not comparable to v1.3.
+WET_FLOOR = 0.28
+WET_STAGE1_FLOOR = 0.22
+WET_STAGE2_FLOOR = 0.22
+
+
+def classify_rust_v19(rgba, floor=WET_FLOOR, s1_floor=WET_STAGE1_FLOOR,
+                      s2_floor=WET_STAGE2_FLOOR, lower_by=0.12):
+    """v1.9: v1.3 with all three saturation floors raised for wet steel.
+
+    Structurally identical to classify_rust_v13 -- same v1.1 base, same
+    Stage 1 dark-rust pass with its blob filters, same Stage 2
+    morphological gap-fill. Only the saturation floors differ. Use for
+    steel panels photographed wet; use v1.3 for dry panels with scattered
+    droplets.
+    """
+    from skimage.morphology import reconstruction, label
+    from skimage.measure import regionprops
+
+    pm = rgba[..., 3] > 10
+    hue, sat, val = hsv_channels(rgba[..., :3])
+    in_hue = (hue >= 10) & (hue <= 55) & pm
+    sats = sat[in_hue]
+    t = floor if len(sats) == 0 else max(otsu_threshold(sats) - lower_by, floor)
+    v11 = (sat > t) & in_hue
+
+    val255 = val * 255.0
+    residual = val255 - cv2.GaussianBlur(val255, (0, 0), sigmaX=15)
+    dark = (residual < -12) & pm & in_hue & (sat > s1_floor) & ~v11
+    stage1 = np.zeros_like(v11)
+    if dark.any():
+        lbl = label(dark, connectivity=2)
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        dil = cv2.dilate(v11.astype(np.uint8), k, iterations=1).astype(bool)
+        for r in regionprops(lbl):
+            if r.area < 30:
+                continue
+            per = r.perimeter if r.perimeter > 0 else 1e-6
+            if r.area < 150 and 4 * np.pi * r.area / (per ** 2) > 0.7:
+                continue
+            c = r.coords
+            if not dil[c[:, 0], c[:, 1]].any():
+                continue
+            stage1[c[:, 0], c[:, 1]] = True
+
+    confirmed = v11 | stage1
+    gap = ((hue >= 10) & (hue <= 55) & (sat > s2_floor)
+           & (residual < -4) & pm & ~confirmed)
+    seed = np.zeros_like(val255); mask_img = np.zeros_like(val255)
+    seed[confirmed] = 1.0; mask_img[confirmed | gap] = 1.0
+    if mask_img.any():
+        stage2 = (reconstruction(seed, mask_img, method='dilation') > 0.5) & gap
+    else:
+        stage2 = np.zeros_like(confirmed)
+
+    rust_mask = confirmed | stage2
     pct = rust_mask.sum() / max(pm.sum(), 1) * 100
     return rust_mask, pct, pm

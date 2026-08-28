@@ -1,7 +1,7 @@
 ---
 name: panel-rust-analysis
 description: "Full pipeline for corrosion/rust test specimen photos -- flat panels (Q-panels) AND round or machined coupons, on steel or cast iron: straighten each specimen, orient any mounting hole to the top, classify rust pixels, generate rust-overlay images, and assemble everything into a PowerPoint deck. Use this whenever the user uploads transparent-background (RGBA, pre-background-removed) panel or coupon photos -- each containing 1-3 specimens side by side -- and asks to run the 'usual' analysis, 'panel straighten and rust analysis', a coupon or button rust analysis, 'do it the same as before', or similar. Also use for follow-up requests on an existing batch: reorienting panels, adjusting the rust-classification threshold, building a diagnostic overlay to sanity-check the % against a visual impression, or re-running with a different classifier. If the input images still have their original background (not yet transparent), use the panel-bg-removal skill first."
-skill_version: "2.8"
+skill_version: "2.9"
 ---
 
 ## VERSION CHECK -- do this before anything else in this skill
@@ -176,7 +176,15 @@ missing, in one batched message**:
    no Average/Std Dev/RSD for anything. Group replicates with `SET_FILES`
    in `run_all.py`. Confirm rather than assume: a trailing index can
    legitimately mean a separate condition on other projects.
-6. **What each set label means** -- e.g. what distinguishes 5A from 6A.
+6. **Whether the specimens were photographed WET.** Straight out of the
+   cabinet with water still on them, or dried first? This selects the
+   classifier (`v1.9` for wet steel) and is not recoverable from the
+   pixels -- a dense condensation field and a fine corrosion bloom look
+   alike at low saturation. **Key it to the photography, not the
+   chamber.** A water-fog run (D1735) usually means wet and a damp-heat
+   run usually means less so, but a dried 1735 panel does not want v1.9
+   (it would undercount) and a wet IEC panel does. Ask.
+7. **What each set label means** -- e.g. what distinguishes 5A from 6A.
    This is the one that most improves the deck and the one most often
    skipped. Answers go verbatim into `DESCRIPTIONS`, keyed by set label.
 
@@ -268,6 +276,18 @@ itself governs if this ever looks inconsistent with it):
   If you ever find yourself adding per-set slides back, check with the
   user first -- this was a deliberate, requested storage tradeoff, not
   something to silently reintroduce because it seems friendlier to skim.
+- **Two layouts, `LAYOUT` in `build_deck_template.js`** (added 2.9).
+  `"columns"` is the canonical one described below and remains the
+  default -- verified byte-identical output on a rebuild of the
+  AN26_0409 deck. `"blocks"` lays each SET out as a horizontal row of its
+  replicates and arranges the blocks `BLOCKS_PER_ROW` across. Use blocks
+  when replicates per set exceed what a column can hold: at n=5 a column
+  collapses to 0.72in rows, whereas blocks put every replicate on one
+  slide at ~1.7in because they spend the slide's slack axis (width)
+  rather than its tight one. Block width is computed from **each set's
+  own** panel aspect -- sizing every block off the widest set pushes the
+  wider ones past the slide margin, the same bug class as the 2.4
+  per-column width fix. House style is otherwise identical across both.
 - **Grouped slides** (all sets as columns on one slide -- one for
   straightened, one per overlay method in use -- now the deck's only
   panel-image content): `IMG_H = 1.6in` is a **floor, not a fixed value**,
@@ -568,6 +588,54 @@ area. Say so rather than reporting the number as total corrosion.
 **v1.7 and v1.8 numbers are not comparable.** Reprocess one side before
 comparing a warm-lit batch against an A-set number.
 
+### v1.9 (`classify_rust_v19`) -- steel photographed WET
+
+**Selected explicitly via `CLASSIFIER = "v1.9"`. Never auto-routed** --
+whether water was on the panel is a fact about the photography, not
+something measurable from a possibly-fully-corroded image. See the intake
+question above.
+
+Structurally this IS v1.3 -- same v1.1 base, same Stage 1 dark-rust pass
+with its round-blob droplet rejection, same Stage 2 morphological gap-fill.
+**Only the three saturation floors differ**: base 0.22 -> 0.28, Stage 1
+0.15 -> 0.22, Stage 2 0.16 -> 0.22.
+
+Why (measured, AN26_0502 1735 series, 3B t=48h panel 4, region identified
+by the operator as condensation rather than rust): v1.3's droplet defences
+were built for *scattered* droplets on a dry panel. They do not handle a
+panel that is **uniformly wet**, where the film of water over clean metal
+carries a weak warm tint sitting inside the rust hue window at low
+saturation.
+
+| population | hue p50 | sat p50 |
+|---|---|---|
+| flagged pixels in the wet region (false positive) | 30.0 | 0.190 (86% below 0.30) |
+| flagged pixels in the genuinely rusted band | 37.7 | 0.316 |
+
+The adaptive Otsu threshold had already bottomed out on v1.3's 0.22 floor,
+and the two growth stages then added 11.8 pp on top of a 14.4% base.
+
+**Cutoff selection**: floors swept together against the operator-identified
+wet region, the known-rusted controls, and the 2h coated panels (visually
+clean). base/stage1/stage2:
+
+| floors | wet region | Ctrl 48h | Ctrl 144h |
+|---|---|---|---|
+| 0.22/0.15/0.16 (v1.3) | 26.4% | 94.0% | 82.4% |
+| 0.26/0.20/0.20 | 6.2% | 93.7% | 82.2% |
+| **0.28/0.22/0.22** | **5.1%** | **93.5%** | **82.1%** |
+| 0.32/0.26/0.26 | 3.5% | 91.8% | 81.7% |
+
+0.28/0.22/0.22 is the knee -- ~80% of the false positive removed for 0.5 pp
+off the rusted controls. Past it the controls start paying.
+
+**Re-measure if lighting, camera or resolution changes.** These floors were
+swept on PowerPoint-recompressed images (160-230 px per panel); a
+full-resolution batch should be re-checked against a known-clean wet panel.
+
+**v1.9 and v1.3 numbers are not comparable.** Reprocess one side before
+comparing a wet batch against a dry one.
+
 ### v1.1 (`classify_rust`) -- base method, still used as v1.3's foundation
 
 Per-panel **adaptive Otsu threshold** on the HSV saturation channel:
@@ -623,12 +691,16 @@ like it might be undercounting. Takes only `rgba` as input; returns
 - **Steel (v1.1-v1.6)**: pure red `(255, 0, 0)` at 90% opacity,
   replacing the pixel. Unchanged since 1.0 -- kept so decks for existing
   steel batches stay visually comparable with ones already delivered.
-- **Cast iron (v1.7)**: soft red `(255, 85, 85)` at 45%, **blended into**
-  the panel pixels rather than replacing them, so corrosion morphology
-  reads through. Near-fully-corroded coupons otherwise render as
-  featureless solid discs -- a 99.1% and a 94.6% coupon look identical
-  and neither shows any structure. Scoped to cast iron deliberately;
-  revisit before applying it to steel batches.
+- **Cast iron (v1.7, v1.8) and wet steel (v1.9)**: soft red
+  `(255, 85, 85)` at 45%, **blended into** the panel pixels rather than
+  replacing them, so corrosion morphology reads through. Near-fully-
+  corroded specimens otherwise render as featureless solid slabs -- a
+  99.1% and a 94.6% coupon look identical and neither shows any
+  structure. Originally scoped to cast iron; **extended to v1.9 at 2.9 on
+  the operator's request**, for the same reason on wet steel controls.
+  The original scoping caveat still holds in one respect: a v1.9 deck is
+  **not visually comparable** with steel decks already delivered under
+  the pure-red style, so say so when handing one over.
 
 ### Known limitations (be upfront about these if asked)
 
@@ -693,6 +765,34 @@ it's not in the current session. If versions differ, note it and consider
 reprocessing one side with the other's classifier for a clean comparison.
 
 ## History / rationale (context if asked, not required reading to run this)
+
+- **v1.9, the `IMG_H` floor fix and the block layout added at
+  skill_version 2.9** (AN26_0502, steel Q-panels, D1735 water fog and IEC
+  chamber, images recovered from a PowerPoint rather than raw files).
+  Three separate findings:
+  (a) The auto path routed wet panels to v1.5, which reported 73-98% rust
+  on coated panels that were visually clean bare steel under condensation
+  -- caught because those same panels simultaneously measured 77-92% bare
+  metal, a self-contradiction. v1.3 handled it far better, and v1.9 then
+  fixed the residual wet false positive v1.3 still showed (see the v1.9
+  section).
+  (b) `IMG_H` was applied as a floor AFTER the height bound, so a column
+  with 5 replicates produced a 9.6in grid on a 7.5in slide and simply ran
+  off the bottom. Latent since the geometry was introduced; never seen
+  because every prior batch had n<=3.
+  (c) The block layout was added because the honest fix for (b) --
+  shrinking rows -- makes n=5 panels illegible.
+
+- **PowerPoint as an image source.** When raw transparent files are gone,
+  panel photos can be recovered from a deck: the media in `ppt/media/` are
+  the intact source photos and the per-panel views are `a:srcRect` crops of
+  them, so `get_panels` on the media beats using the crops. Map media to
+  set labels via each slide's XML geometry -- **on this project the set
+  label sits BELOW its row of panels**, so assign each image to the first
+  label whose y exceeds the image's y, and verify against a render before
+  trusting it. Expect PowerPoint recompression (160-230 px per panel here,
+  against the 1000+ px these classifiers were tuned on); say so when
+  reporting numbers.
 
 - **v1.8 added at skill_version 2.8** (AN26_0409 B-set, 6 single round
   cast-iron coupons, 24h IEC 60068-2-30). Second lighting condition on
