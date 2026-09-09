@@ -1,5 +1,5 @@
 """
-panel-rust-analysis skill_version: 2.10 -- must match SKILL.md's
+panel-rust-analysis skill_version: 2.11 -- must match SKILL.md's
 skill_version, the repo copy, and the panel-rust-analysis line in
 PROJECT_CANON.md. If it is out of sync with any of those, this file has
 reverted to a stale snapshot: run from the repo clone instead of this
@@ -44,7 +44,7 @@ from pipeline import (load_rgba, get_panels, straighten_panel, make_overlay,
                       OVERLAY_COLOR_LEGACY, OVERLAY_OPACITY_LEGACY,
                       classify_rust, classify_rust_v13, classify_rust_v14,
                       classify_rust_v15, classify_rust_v16, classify_rust_v17,
-                      classify_rust_v18, classify_rust_v19,
+                      classify_rust_v18, classify_rust_v19, classify_rust_v20,
                       classify_rust_auto, bare_fraction, bare_fraction_ci)
 from PIL import Image
 
@@ -67,9 +67,14 @@ MAX_PANELS_OVERRIDE = {}
 # as separate LABELS silently reports n=1 for everything. Leave {} to use
 # the default one-file-per-label convention.
 SET_FILES = {}
-CLASSIFIER = "auto"           # "auto" | "v1.9" | "v1.8" | "v1.7" | "v1.6" |
+CLASSIFIER = "auto"           # "auto" | "v2.0" | "v1.9" | "v1.8" | "v1.7" |
+                              #   "v1.6" |
                               #   "v1.5" | "v1.3" | "v1.4" | "v1.1"
                               # v1.8: dark cast iron, warm/shadowed lighting
+                              # v2.0: wet steel that also carries DARK OXIDE
+                              #   v1.9 cannot reach (dark edge bands, dark
+                              #   cores of streaks). Adds a darkness-gated
+                              #   recovery on top of v1.9. Explicit only.
                               # v1.9: steel photographed WET (straight out of
                               #   the cabinet, water still on the panel). Keyed
                               #   to the PHOTOGRAPHY, not the chamber -- a
@@ -99,7 +104,8 @@ def _classify(arr):
     fn = {"v1.1": classify_rust, "v1.3": classify_rust_v13,
           "v1.4": classify_rust_v14, "v1.5": classify_rust_v15,
           "v1.6": classify_rust_v16, "v1.7": classify_rust_v17,
-          "v1.8": classify_rust_v18, "v1.9": classify_rust_v19}[CLASSIFIER]
+          "v1.8": classify_rust_v18, "v1.9": classify_rust_v19,
+          "v2.0": classify_rust_v20}[CLASSIFIER]
     mask, pct, pm = fn(arr)
     return mask, pct, CLASSIFIER
 

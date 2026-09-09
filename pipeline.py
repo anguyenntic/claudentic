@@ -1,4 +1,4 @@
-# panel-rust-analysis skill_version: 2.10 -- must match SKILL.md's
+# panel-rust-analysis skill_version: 2.11 -- must match SKILL.md's
 # skill_version, the repo copy, and the panel-rust-analysis line in
 # PROJECT_CANON.md. If it is out of sync with any of those, this file has
 # reverted to a stale snapshot: run from the repo clone instead of this
@@ -443,6 +443,102 @@ def classify_rust_v16(rgba, sat_max=BARE_SAT_MAX, val_min=BARE_VAL_MIN,
     pct = rust_mask.sum() / max(pm.sum(), 1) * 100
     return rust_mask, pct, pm
 
+
+def classify_rust_v20(rgba, dark_frac=0.62, return_parts=False):
+    """v2.0: v1.9 base + dark-oxide recovery by absolute darkness, gated on
+    connectivity to confirmed rust. For STEEL PHOTOGRAPHED WET carrying dark
+    oxide the colour-based passes cannot reach.
+
+    WHY THIS EXISTS (measured, AN26_0111, 12 wet steel Q-panels, with operator
+    annotation of two panels):
+
+    v1.9 leaves the dark bands at panel edges and the dark cores of rust
+    streaks uncounted, and no colour rule can recover them. Warm bias
+    100*(R-B)/(R+G+B), which stays meaningful at low value where HSV
+    saturation does not:
+
+      confirmed rust        p10 +10.8  p50 +17.7  p90 +32.0   V p50  51
+      dark band (missed)    p10 -10.7  p50  +0.5  p90 +19.3   V p50  53
+      clean wet grey field  p10  +0.6  p50  +1.35 p90  +3.8   V p50 102
+
+    The missed band is LESS warm than clean wet steel at the median, so any
+    hue or chroma threshold loose enough to include it must also include the
+    entire clean field. Darkness is the only separating axis left: the band
+    sits at about half the brightness of the clean field.
+
+    METHOD: a pixel is a candidate if it is below `dark_frac` of the panel's
+    OWN median brightness, and it is kept only if morphological
+    reconstruction connects it to the v1.9-confirmed mask.
+
+    THE CONNECTIVITY GATE IS LOAD-BEARING, as in v1.5. Without it the pass
+    recruits the shadowed side of every condensation droplet -- verified on
+    this batch: the unconnected dark candidates form a speckle field across
+    the whole panel body, which is the droplet false positive fixed at 2.0
+    and 2.3. Do not remove it.
+
+    WHY A GLOBAL REFERENCE, having tried three local ones. All were built and
+    inspected on this batch; the operator chose this one after seeing all four:
+      - LOCAL GAUSSIAN mean (sigma 150): kills a false positive this method
+        has on 11A p1 (below), but a Gaussian at sigma comparable to the
+        feature width is pulled down by the feature itself, so a WIDE dark
+        band partly becomes its own background and under-recruits. Visibly
+        worse than this method on 0A p1, which carries the widest band.
+      - ITERATIVE clean-pixel mean: UNSTABLE. Excluding dark candidates
+        raises the background, which qualifies more pixels as dark, which
+        excludes more. At 3 iterations it flooded the grey field (0A p1 37%,
+        11A p1 36%) while a scalar score on two hand-picked regions still
+        looked good -- do not evaluate a change here without rendering it.
+      - GREY CLOSING / rolling ball: the dilation step takes a local MAX,
+        which the specular highlights on the condensation droplets drive to
+        near 255, so the background saturates and ~93% of every panel
+        qualifies. Wrong operator for a droplet-covered surface.
+      - LOCAL 60th PERCENTILE (radius 70): stable and resolves the
+        global-vs-Gaussian conflict, but on this batch it was not visibly
+        better than this method anywhere except 11A p1. Kept as
+        `classify_dark_percentile` in the batch notes if it is wanted later.
+
+    KNOWN FALSE POSITIVE, accepted by the operator: because the reference is
+    the panel median, this method cannot track a strong top-to-bottom
+    brightness gradient, so the darkest part of an upper grey field can be
+    recruited. On AN26_0111 11A panel 1 it flags a blotch of about 1.06% of
+    panel area that the operator confirmed is not rust -- i.e. that panel's
+    number is high by roughly 1 pp. Check for this on any panel with a strong
+    gradient and report it per panel rather than silently.
+
+    KNOWN LIMITATION -- edge shadow is accepted as rust. 61% of what this
+    adds lies within 40 px of the panel edge, on every panel including the
+    cleanest. Q-panel edges genuinely corrode first under B117, but a sheared
+    edge in shadow is indistinguishable from edge oxide by any measurement
+    available here. Interior gain averaged 1.18 pp per panel on this batch;
+    the edge strip averaged 1.84 pp. Report both rather than implying the
+    total is all corrosion.
+
+    Replicate scatter is worse than v1.9's (RSD 20-31% vs 2-21% on this
+    batch) because the edge strip varies panel to panel. Coverage improved,
+    precision degraded -- say so when handing over numbers.
+
+    v2.0 numbers are NOT comparable with v1.9, v1.3 or any other version.
+    """
+    from skimage.morphology import reconstruction
+
+    confirmed, _pct, pm = classify_rust_v19(rgba)
+    V = rgba[..., :3].astype(np.float32).sum(axis=2) / 3.0
+    ref = float(np.median(V[pm])) if pm.any() else 0.0
+    cand = pm & ~confirmed & (V < dark_frac * ref)
+
+    seed = np.zeros(V.shape, np.float32)
+    mask_img = np.zeros(V.shape, np.float32)
+    seed[confirmed] = 1.0
+    mask_img[confirmed | cand] = 1.0
+    if mask_img.any() and confirmed.any():
+        grown = reconstruction(seed, mask_img, method='dilation') > 0.5
+    else:
+        grown = confirmed.copy()
+    grown &= pm
+    pct = 100.0 * grown.sum() / max(pm.sum(), 1)
+    if return_parts:
+        return grown, pct, pm, confirmed, cand
+    return grown, pct, pm
 
 def bare_fraction(rgba, sat_max=BARE_SAT_MAX, val_min=BARE_VAL_MIN):
     """Fraction of the panel matching the clean bare-metal signature.

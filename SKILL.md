@@ -1,7 +1,7 @@
 ---
 name: panel-rust-analysis
 description: "Full pipeline for corrosion/rust test specimen photos -- flat panels (Q-panels) AND round or machined coupons, on steel or cast iron: straighten each specimen, orient any mounting hole to the top, classify rust pixels, generate rust-overlay images, and assemble everything into a PowerPoint deck. Use this whenever the user uploads transparent-background (RGBA, pre-background-removed) panel or coupon photos -- each containing 1-3 specimens side by side -- and asks to run the 'usual' analysis, 'panel straighten and rust analysis', a coupon or button rust analysis, 'do it the same as before', or similar. Also use for follow-up requests on an existing batch: reorienting panels, adjusting the rust-classification threshold, building a diagnostic overlay to sanity-check the % against a visual impression, or re-running with a different classifier. If the input images still have their original background (not yet transparent), use the panel-bg-removal skill first."
-skill_version: "2.10"
+skill_version: "2.11"
 ---
 
 ## VERSION CHECK -- do this before anything else in this skill
@@ -419,6 +419,19 @@ The fix is not a judgement call about which one "looks right" -- it's
 `bare_fraction()`, an objective measurement of how much clean metal
 remains, used to select the correctly-formulated method.
 
+**Substrate auto-detection is not trustworthy on WET steel (found at 2.11).**
+On AN26_0111 `detect_substrate` called all 12 wet steel Q-panels `cast_iron`.
+It takes the median value of dull pixels (`sat < SUBSTRATE_PROBE_SAT`) against
+`SUBSTRATE_VAL_CUT = 0.55`; on wet panels that median measured **0.427-0.545**,
+below the cut on every one of them, because the condensation film and the dark
+grey upper field drag clean steel's brightness down. The dry clean-steel
+reference is val p1 0.776. Left on the detector's answer the batch would have
+routed to v1.7 and produced meaningless numbers. **Always set `SUBSTRATE`
+explicitly on a wet batch**, and treat detection as a cross-check that can
+disagree, not an answer. `bare_fraction` is unreliable on wet steel for the
+same reason -- it read 31-38% on those panels, which would have sent the auto
+path to v1.6 and returned ~62-69% rust on visibly mostly-clean panels.
+
 **Substrate first (added at 2.7).** `classify_rust_auto` takes a
 `substrate` argument, set from `SUBSTRATE` in `run_all.py`. For
 `"cast_iron"` it returns **v1.7** unconditionally -- the bare_fraction
@@ -595,6 +608,93 @@ area. Say so rather than reporting the number as total corrosion.
 
 **v1.7 and v1.8 numbers are not comparable.** Reprocess one side before
 comparing a warm-lit batch against an A-set number.
+
+### v2.0 (`classify_rust_v20`) -- wet steel that also carries DARK OXIDE
+
+**Selected explicitly via `CLASSIFIER = "v2.0"`. Never auto-routed** -- like
+v1.9 it depends on facts about the specimen and the photography that are not
+recoverable from the pixels.
+
+v1.9 base, plus recovery of pixels below `dark_frac` (default 0.62) of the
+panel's OWN median brightness, kept only where morphological reconstruction
+connects them to the v1.9-confirmed mask.
+
+Why it exists (measured, AN26_0111, 12 wet steel Q-panels, with the operator
+annotating two of them): v1.9 leaves the dark bands at panel edges and the
+dark cores of rust streaks uncounted, and **no colour rule can recover them.**
+Warm bias `100*(R-B)/(R+G+B)`, which stays meaningful at low value where HSV
+saturation does not:
+
+| population | p10 | p50 | p90 | brightness p50 |
+|---|---|---|---|---|
+| confirmed rust | +10.8 | **+17.7** | +32.0 | 51 |
+| the missed dark band | -10.7 | **+0.5** | +19.3 | 53 |
+| clean wet grey field | +0.6 | **+1.35** | +3.8 | 102 |
+
+The missed band is *less warm than clean wet steel at the median*, so any hue
+or chroma threshold loose enough to include it must also include the entire
+clean field. Darkness is the only separating axis left: the band sits at about
+half the brightness of the clean field.
+
+**The connectivity gate is load-bearing**, exactly as in v1.5. Without it the
+pass recruits the shadowed side of every condensation droplet -- verified on
+this batch, where the unconnected dark candidates form a speckle field across
+the whole panel body. That is the droplet false positive fixed at 2.0 and 2.3.
+Do not remove it.
+
+#### Four background references were built and compared; three failed
+
+Recorded because the failures are instructive and two of them look fine on
+numbers alone:
+
+1. **GLOBAL panel median -- ADOPTED**, on the operator's choice after seeing
+   all four. Covers wide dark bands well. Cannot track a top-to-bottom
+   brightness gradient; see the known false positive below.
+2. **LOCAL Gaussian mean (sigma 150).** Kills that false positive, but a
+   Gaussian at sigma comparable to the feature width is pulled down by the
+   feature itself, so a WIDE dark band partly becomes its own background and
+   under-recruits. The operator spotted this directly: global was better on
+   0A p1 (widest band) while local was better on 0A p2.
+3. **ITERATIVE clean-pixel mean. UNSTABLE -- do not revisit.** Excluding dark
+   candidates raises the background, which qualifies more pixels as dark,
+   which excludes more. At 3 iterations it flooded the grey field (0A p1 37%,
+   11A p1 36%) **while a scalar score on two hand-picked regions still looked
+   like the best option yet.** Never evaluate a change here on region scores
+   alone -- render it and look.
+4. **GREY CLOSING / rolling ball.** The dilation step takes a local MAX, which
+   the specular highlights on condensation droplets drive to near 255, so the
+   background saturates and ~93% of every panel qualifies. Wrong operator for
+   a droplet-covered surface.
+5. **LOCAL 60th percentile (radius 70).** Stable, and it does resolve the
+   global-vs-Gaussian conflict, but on this batch it was not visibly better
+   than the global reference anywhere except the one gradient panel. Available
+   if a future batch has a stronger gradient.
+
+#### Known limitations -- state both when reporting v2.0 numbers
+
+- **Brightness-gradient false positive.** Because the reference is the panel
+  median, a panel with a strong top-to-bottom gradient can have the darkest
+  part of its upper field recruited. On AN26_0111 11A panel 1 this was a
+  blotch of **1.06% of panel area** the operator confirmed was not rust, so
+  that panel's number is high by about 1 pp. Check any gradient-heavy panel
+  and report it per panel rather than silently. If it dominates a batch,
+  formulation 5 above is the alternative.
+- **Edge shadow is accepted as rust by construction.** 61% of what v2.0 adds
+  lies within 40 px of the panel edge, on every panel including the cleanest.
+  Q-panel edges genuinely corrode first under B117, but a sheared edge in
+  shadow is indistinguishable from edge oxide by any measurement available on
+  a wet panel. Interior gain averaged 1.18 pp/panel on this batch, the edge
+  strip 1.84 pp/panel -- report both rather than implying the total is all
+  corrosion.
+- **Precision degrades as coverage improves.** Replicate RSD was 14-27% under
+  v2.0 against v1.9's 2-21% on the same panels, because the edge strip varies
+  panel to panel. Say so when handing over numbers.
+- **Drying is not a fix at a live timepoint.** Dry photography would separate
+  oxide from shadow, but wiping or drying alters the specimen. A dedicated
+  sacrificial panel dried at a future timepoint gives the calibration
+  reference without disturbing the series.
+
+**v2.0 numbers are NOT comparable with v1.9 or any other version.**
 
 ### v1.9 (`classify_rust_v19`) -- steel photographed WET
 
@@ -777,6 +877,24 @@ it's not in the current session. If versions differ, note it and consider
 reprocessing one side with the other's classifier for a clean comparison.
 
 ## History / rationale (context if asked, not required reading to run this)
+
+- **v2.0, the wet-steel substrate warning and the significance-slide sample-size
+  fix added at skill_version 2.11** (AN26_0111, 12 wet steel Q-panels, B117
+  24 h). Three findings:
+  (a) `detect_substrate` called every wet steel panel cast iron (see the
+  substrate note in the classifier section). Caught because the operator had
+  already stated the substrate; nothing in the numbers would have flagged it.
+  (b) The operator inspected the v1.9 overlays and identified uncounted dark
+  oxide. Four background references were tried before one was adopted, two of
+  which failed in ways that scalar scores did not reveal -- see the v2.0
+  section. The operator's own annotations of a missed region and a
+  false-positive region were the ground truth that settled it.
+  (c) `build_deck_template.js` hardcoded the significance slide's caveat as
+  "n=3 controls and n=5 coated sets", carried over from AN26_0409. AN26_0111
+  is n=2 throughout, so the slide asserted sample sizes the batch did not have
+  on the one slide meant to stop a reader over-reading the result, and a wrong
+  n *understates* how underpowered the test is. Now derived from
+  `full_results.json`.
 
 - **Universal overlay and optional significance testing added at
   skill_version 2.10.** The blended overlay stopped being per-substrate

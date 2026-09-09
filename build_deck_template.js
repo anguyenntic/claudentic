@@ -1,5 +1,5 @@
 /*
- * panel-rust-analysis skill_version: 2.10 -- must match SKILL.md's
+ * panel-rust-analysis skill_version: 2.11 -- must match SKILL.md's
  * skill_version, the repo copy, and the panel-rust-analysis line in
  * PROJECT_CANON.md. If it is out of sync with any of those, this file has
  * reverted to a stale snapshot: run from the repo clone instead of this
@@ -518,9 +518,19 @@ function buildStatsSlide(tp) {
     border: { type: "solid", color: LIGHT_LINE, pt: 1 },
     align: "center", valign: "middle", autoPage: false,
   });
+  // Sample sizes are DERIVED from full_results.json, not hardcoded. They read
+  // "n=3 controls and n=5 coated sets" until 2.11, carried over from the
+  // AN26_0409 batch. AN26_0111 runs n=2 on every set, so the caveat stated
+  // sample sizes the batch did not have -- on the one slide whose whole job is
+  // to stop a reader over-reading the result. A wrong n understates how
+  // underpowered the test is, which is the opposite of what this line is for.
+  const nBySet = SETS.map((s) => (results[s] && results[s].pct ? results[s].pct.length : 0))
+                     .filter((n) => n > 0);
+  const nMin = Math.min(...nBySet), nMax = Math.max(...nBySet);
+  const nPhrase = nMin === nMax ? `n=${nMin} per set` : `n=${nMin}-${nMax} per set`;
   slide.addText(
     `${all.test}, \u03b1 = ${all.alpha}. "Not shown" means the difference was not demonstrated at this sample size \u2014 `
-    + `NOT that the sets perform the same. With n=3 controls and n=5 coated sets this test has low power. `
+    + `NOT that the sets perform the same. With ${nPhrase} this test has low power. `
     + `Hedges' g is the size of the difference; p is the confidence it is not noise. Read both. `
     + `Replicates are panels within one chamber run, so run-to-run variation is not captured.`,
     { x: 0.5, y: SLIDE_H - 1.15, w: SLIDE_W - 1.0, h: 0.6, fontSize: 9, italic: true, color: GRAY, fontFace: FONT }
