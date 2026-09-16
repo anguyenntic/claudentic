@@ -1,8 +1,52 @@
 ---
 name: panel-rust-analysis
 description: "Full pipeline for corrosion/rust test specimen photos -- flat panels (Q-panels) AND round or machined coupons, on steel or cast iron: straighten each specimen, orient any mounting hole to the top, classify rust pixels, generate rust-overlay images, and assemble everything into a PowerPoint deck. Use this whenever the user uploads transparent-background (RGBA, pre-background-removed) panel or coupon photos -- each containing 1-3 specimens side by side -- and asks to run the 'usual' analysis, 'panel straighten and rust analysis', a coupon or button rust analysis, 'do it the same as before', or similar. Also use for follow-up requests on an existing batch: reorienting panels, adjusting the rust-classification threshold, building a diagnostic overlay to sanity-check the % against a visual impression, or re-running with a different classifier. If the input images still have their original background (not yet transparent), use the panel-bg-removal skill first."
-skill_version: "2.11"
+skill_version: "2.12"
 ---
+
+**Installed skill_version: 2.12** -- this marker is duplicated in the BODY
+because when this skill is saved through a proposal card the frontmatter is
+rewritten and only `name` and `description` survive it. If the frontmatter has
+no `skill_version`, read this line.
+
+## THE DELIVERABLE IS THE DECK, AND ONLY THE DECK (set at 2.12)
+
+**One file reaches the user from this skill: the `.pptx`.** Nothing else.
+
+Do NOT deliver, attach, upload, or write into the user's folders:
+
+- overlay or straightened panel PNGs
+- `all_results.json`, `full_results.json`, `image_dims.json`, `stats.json`
+- contact sheets, diagnostic overlays, comparison figures, renders
+- the working directory, or a zip of any of the above
+
+All of those are working files. They belong in the working directory and stay
+there. They are still produced -- the deck is built from them and the QA steps
+depend on them -- they are simply not output.
+
+This was asked for directly (AN26_0112, 16 Sep 2026) after a run delivered 24
+overlay PNGs and four JSON files alongside the deck. The user's words: "don't
+give me the overlay images, the json files, or whatever. From this skill, all I
+want is the powerpoint deck."
+
+**Two consequences that are easy to get wrong:**
+
+1. **A diagnostic image shown DURING a conversation is not a deliverable.**
+   When the user questions a number, showing them a rendered comparison is
+   correct and expected -- that is how a classifier argument gets settled (see
+   "Diagnostic overlay" below). Show it in the conversation; do not leave it in
+   their folders afterwards. If a diagnostic was already written somewhere the
+   user will see it, clean it up or tell them where it is so they can.
+2. **The deck must actually be deliverable, so watch its size.** With per-set
+   slides gone the deck is still 48+ full-resolution RGBA PNGs; a 24-panel
+   batch measured **142 MB**, which exceeds both the chat upload limit and the
+   per-file limit for writing to the user's disk. When the deck would exceed
+   roughly 20 MB, downscale the embedded panel images and rebuild. Measured on
+   AN26_0112: scaling to **28%** of native gave a 17 MB deck at about 360 dpi
+   for the size the panels display at, well past what any screen or printer
+   resolves. Downscaling is NOT the same as the forbidden flattening -- keep
+   RGBA with real alpha, never composite onto white, never convert to JPEG.
+   Say in one line that you downscaled and why.
 
 ## VERSION CHECK -- do this before anything else in this skill
 
@@ -58,7 +102,7 @@ grep -m1 skill_version canon/SKILL.md
 - **Installed version == repo version** -- proceed, and run from the repo
   copy anyway (see below). Nothing to report.
 - **Installed version < repo version, or the installed files carry no
-  `skill_version` marker at all** -- the installed skill has reverted.
+  version marker at all** -- the installed skill has reverted.
   Say so plainly in one line, then **run from the repo copy** and carry
   on. Do not stop, do not ask the person to re-upload before proceeding,
   and do not reconstruct the fixes from conversation history: the repo
@@ -209,6 +253,12 @@ Rules for handling the answers:
   it. An omitted description row is fine; an invented one is not.
 - **Don't re-ask what's already established** in the conversation, the
   project files, or an earlier batch of the same experiment.
+- **Keep descriptions SHORT.** The column description row is about 0.86in
+  wide at 9pt -- roughly 16 characters per line, with two lines of space. A
+  40-character description overflows upward into the set label and is clipped
+  at the bottom (seen on AN26_0112). Condense to ~20 characters
+  ("34CD / AN_081626_3") and put the person's full wording on the
+  test-conditions slide via `METHODS`, where there is room for it verbatim.
 
 ## Prerequisites
 
@@ -249,7 +299,10 @@ skill first to produce these.
 4. **Visual QA before building the deck.** Build a quick contact sheet
    (straightened + overlay side by side per set, downscaled) and `view` it.
    Confirm: hole at top, no obvious mis-segmentation, overlay tracking real
-   rust rather than glare/gradients/condensation droplets.
+   rust rather than glare/gradients/condensation droplets. **The contact
+   sheet is a working file** -- view it, and if something is worth the user's
+   eye show it in the conversation, but it is not delivered and it does not go
+   into their folders.
 5. **Build the PowerPoint.** Copy `scripts/build_deck_template.js` into the
    working directory, edit the `PROJECT`/`SETS`/`TIMEPOINT`/`DESCRIPTIONS`
    constants at the top for the current batch, and run with `node`. See
@@ -258,11 +311,20 @@ skill first to produce these.
    Validate with `/mnt/skills/public/pptx/scripts/office/validate.py`,
    then render to images (`soffice --headless --convert-to pdf` +
    `pdftoppm -jpeg -r 150`) and QA **every slide** before delivering.
-6. **Deliver**: copy the final `.pptx` to `/mnt/user-data/outputs/` and
-   call `present_files`. Filename convention:
-   `{project}_{firstSet}-{lastSet}_{timepoint}B117.pptx`. Report the rust
-   % summary table in the chat reply too, in addition to the deck's own
-   summary slide (see house style below) -- report it both places.
+   Check the deck's size here, not after: if it is much over 20 MB,
+   downscale the panel images and rebuild (see the deliverable section at
+   the top).
+6. **Deliver the deck, and nothing else.** Copy the final `.pptx` to
+   `/mnt/user-data/outputs/` and present it. Filename convention:
+   `{project}_{firstSet}-{lastSet}_{timepoint}{TEST_METHOD}.pptx`. Where a
+   folder on the user's machine is connected, write the `.pptx` there too --
+   the deck only. Overlays, straightened panels, JSON, contact sheets and
+   renders stay in the working directory. In the chat reply, give the
+   findings and the caveats that affect how the numbers should be read, in
+   prose; the per-panel table is already the deck's summary slide and does
+   not need repeating. (This reverses the 2.1 rule that required the table in
+   both places -- reversed at 2.12 on the user's request that the deck be the
+   only output.)
 
 ## Deck house style (canonical -- do not improvise, do not re-derive from memory)
 
@@ -296,6 +358,14 @@ itself governs if this ever looks inconsistent with it):
   own** panel aspect -- sizing every block off the widest set pushes the
   wider ones past the slide margin, the same bug class as the 2.4
   per-column width fix. House style is otherwise identical across both.
+- **Grouping sets across slides.** By default `chunkForWidth` packs as many
+  columns onto a slide as fit. When the batch has a meaningful split -- two
+  substrates, two dry-down times -- pack by that instead, so a reader is not
+  comparing across a boundary that matters. `SET_GROUPS` (a list of explicit
+  set lists) and `GROUP_SUFFIX` (text appended to the slide title for the
+  chunk starting with a given label, e.g. the substrate) exist for this; both
+  are no-ops when empty. Added at 2.12 for AN26_0112, where eight sets were
+  four R-35 and four QD-35.
 - **Grouped slides** (all sets as columns on one slide -- one for
   straightened, one per overlay method in use -- now the deck's only
   panel-image content): `IMG_H = 1.6in` is a **floor, not a fixed value**,
@@ -338,6 +408,8 @@ itself governs if this ever looks inconsistent with it):
     batch.** Whenever `DESCRIPTIONS` is non-empty, every column in that
     group reserves the same vertical space for the row regardless of
     whether that particular set has text, so columns stay row-aligned.
+    The box is 0.3in tall and the column is narrow, so **two lines is the
+    budget** -- see the length rule under Intake.
   - **Overflow handling**: if a batch has too many sets to fit one slide
     at the fixed column width (`chunkForWidth`), it's split into multiple
     grouped slides automatically. The template also throws a hard error if
@@ -352,7 +424,10 @@ itself governs if this ever looks inconsistent with it):
   appear nowhere in the deck and cannot be recovered from the images
   months later. Same sourcing rule as `DESCRIPTIONS` -- the person's
   exact wording, never inferred, never expanded into detail they did not
-  give.
+  give. Two rows belong here on every run where they apply: the
+  **classifier** actually used, and any **known undercount or known false
+  positive** it carries on this batch. A number that is a lower bound should
+  say so on the slide, not only in the chat.
 - **No title slide, but a summary-table slide IS required**, added last
   (after all grouped slides): rust % per panel per set, plus Average, Std
   Dev, and RSD per set. Canonical palette/font, method footnote at the
@@ -360,11 +435,11 @@ itself governs if this ever looks inconsistent with it):
   whenever more than one classifier was used in the batch, e.g. v1.3 for
   most sets and v1.4 for one explicitly-requested set -- this can no
   longer point to "per-set overlay slide titles" since those don't exist
-  anymore as of 2.2). **Also still report the same rust % table in the
-  chat reply** -- the deck slide doesn't replace that, both should exist.
-- **Filename**: `{project}_{firstSet}-{lastSet}_{timepoint}B117.pptx`.
+  anymore as of 2.2). This slide is where the per-panel numbers live; as of
+  2.12 they are not repeated as a table in the chat reply.
+- **Filename**: `{project}_{firstSet}-{lastSet}_{timepoint}{TEST_METHOD}.pptx`.
 - Footer on every slide: `{PROJECT} · Rust Analysis · {TIMEPOINT}` left,
-  page number right -- no "B117" suffix in the footer text itself (that
+  page number right -- no test-method suffix in the footer text itself (that
   only appears in the filename). Exception: when adding grouped slides
   onto an already-existing older deck whose slides predate this house
   style (e.g. a different font, no footer, or that older deck's own
@@ -381,9 +456,9 @@ itself governs if this ever looks inconsistent with it):
   corners as true transparency) -- **do not** flatten to a white
   background or convert to JPEG to save space. That flattening approach
   was used in a different, older deck-building implementation for a
-  different project; it does not apply to this canonical template, and
-  with per-set slides removed there's no longer enough storage pressure
-  to justify that quality tradeoff even if there were.
+  different project; it does not apply to this canonical template.
+  Deliberately downscaling the PNGs to keep the deck deliverable is a
+  different thing and is allowed -- see the deliverable section at the top.
 - **Data structure consumed**: `full_results.json` keyed by set label ->
   `{method, pct: [p1, p2, p3]}`, plus `image_dims.json` keyed by full
   relative image path. Both written by `run_all.py`.
@@ -649,7 +724,8 @@ numbers alone:
 
 1. **GLOBAL panel median -- ADOPTED**, on the operator's choice after seeing
    all four. Covers wide dark bands well. Cannot track a top-to-bottom
-   brightness gradient; see the known false positive below.
+   brightness gradient; see the known false positive below, and the v2.1
+   section, where that failure became the dominant one on a later batch.
 2. **LOCAL Gaussian mean (sigma 150).** Kills that false positive, but a
    Gaussian at sigma comparable to the feature width is pulled down by the
    feature itself, so a WIDE dark band partly becomes its own background and
@@ -667,8 +743,9 @@ numbers alone:
    a droplet-covered surface.
 5. **LOCAL 60th percentile (radius 70).** Stable, and it does resolve the
    global-vs-Gaussian conflict, but on this batch it was not visibly better
-   than the global reference anywhere except the one gradient panel. Available
-   if a future batch has a stronger gradient.
+   than the global reference anywhere except the one gradient panel. **This is
+   the formulation that became v2.1** when a batch with a strong gradient
+   finally arrived.
 
 #### Known limitations -- state both when reporting v2.0 numbers
 
@@ -676,7 +753,8 @@ numbers alone:
   median, a panel with a strong top-to-bottom gradient can have the darkest
   part of its upper field recruited. On AN26_0111 11A panel 1 this was a
   blotch of **1.06% of panel area** the operator confirmed was not rust, so
-  that panel's number is high by about 1 pp. Check any gradient-heavy panel
+  that panel's number is high by about 1 pp. On AN26_0112 the same mechanism
+  cost up to **11 pp on one panel** -- see v2.1. Check any gradient-heavy panel
   and report it per panel rather than silently. If it dominates a batch,
   formulation 5 above is the alternative.
 - **Edge shadow is accepted as rust by construction.** 61% of what v2.0 adds
@@ -695,6 +773,86 @@ numbers alone:
   reference without disturbing the series.
 
 **v2.0 numbers are NOT comparable with v1.9 or any other version.**
+
+### v2.1 (`classify_rust_v21`) -- v2.0 with a LOCAL brightness reference
+
+**Selected explicitly via `CLASSIFIER = "v2.1"`. Never auto-routed**, for the
+same reason as v1.9 and v2.0.
+
+Identical to v2.0 except the reference `dark_frac` is taken against: the
+**local 60th percentile of brightness over a disk of radius 150 px**
+(`local_brightness_ref`, computed on a 4x-downscaled copy and resampled up --
+a background estimate wants to be smooth, and the interpolation costs nothing
+real; outside-panel pixels are filled with the panel median first so the filter
+is not dragged down at the specimen edge). `dark_frac = 0.62` and the
+connectivity gate are unchanged.
+
+**Why (measured, AN26_0112, 24 wet steel Q-panels, B117 24 h; the operator
+reported BOTH failures in one message and they share one cause).** This batch's
+panels carry a far steeper top-to-bottom brightness gradient than AN26_0111's:
+top rows median 66-95, bottom rows 188-211, a **2-3x ratio**. Against a global
+median of ~129 the v2.0 cutoff lands at ~80 -- inside the clean grey upper
+field, and far below anything in the bright lower field. One cutoff therefore
+fails in both directions at once: it flags clean dark metal at the top and
+cannot reach genuine dark oxide at the bottom.
+
+The decisive measurement, on 2A panel 1:
+
+| population | warm bias |
+|---|---|
+| confirmed rust | **+15.7** |
+| clean field | +1.5 |
+| what v2.0 ADDED | **+0.0** |
+
+The added region was colder than clean metal -- shadow, not corrosion. It was
+11.1 pp on that panel. Under v2.1 the added region measures +3.8, warmer than
+the clean field, and the blob is gone on render.
+
+**Effect on the batch**: set means moved 2A 10.5 -> 7.0, 3A 5.4 -> 5.3,
+4A 35.3 -> 36.6, 5A 33.8 -> 34.7, 2B 5.3 -> 5.8, 3B 5.0 -> 4.8,
+4B 34.2 -> 35.1, 5B 39.1 -> 40.3. Rankings and conclusions were unchanged, but
+the largest apparent difference in the experiment (2A vs 3A, +5.1 pp) was
+mostly artifact and fell to +1.7 pp.
+
+#### What v2.1 still misses, and why two further attempts were rejected
+
+The operator also reported near-black oxide at the bottom of the corroded
+panels going uncounted, and discrete dark rust spots along panel edges. Two
+candidate fixes were built and **both were rejected on render**:
+
+- **Warm-bias recovery pass** (warm > 6, sat > 0.12, rust hue,
+  connectivity-gated). Recovers thin bleed but not the near-black band, and it
+  picks up droplet shadow. Moved corroded sets 8-11 pp.
+- **Relaxed darkness cutoff + minimum-component-size gate** (extended cutoff
+  0.78-0.92, keep only large dark components containing core-dark pixels). This
+  does reach the band, and at the same settings it paints a full-height stripe
+  down both edges of the near-clean guard panels. The band and the edge shadow
+  move together at every setting tried.
+
+**The reason no threshold works** is worth recording so nobody re-derives it:
+in the missed band, warm bias is **+3.0** while that panel's clean field is
++1.4 -- but a near-clean panel's clean field measures **+3.3**, higher than the
+rusted panel's band. There is no colour threshold that separates them ACROSS
+panels. At brightness 50-90 on an 8-bit phone HEIC with per-scene tone mapping,
+the chroma is simply gone, and black oxide and shadow occupy the same place in
+every colour space available.
+
+**So v2.1 undercounts near-black oxide, and that is a capture limitation, not a
+tuning one.** Put it on the test-conditions slide as a known undercount and
+report those levels as lower bounds. The fixes are photographic:
+
+- Shoot straight down from a fixed height with even lighting. The gradient is
+  what broke v2.0 and the edge shadow is what blocks the band; both are
+  lighting.
+- Pull a **sacrificial panel and photograph it dry** at a later timepoint. Dry,
+  oxide and shadow separate cleanly and it gives a calibration reference
+  without disturbing the live series.
+- **Operator annotation is the highest-value lever available.** Ask them to
+  outline one region they know is oxide and one they know is shadow, and fit
+  the cutoffs to that ground truth. This is what settled the equivalent
+  argument on AN26_0111 and it beats any amount of threshold sweeping.
+
+**v2.1 numbers are NOT comparable with v2.0, v1.9 or any other version.**
 
 ### v1.9 (`classify_rust_v19`) -- steel photographed WET
 
@@ -834,6 +992,8 @@ unaffected -- this is presentation only.
   on active rust streaks can still pick up some signal since they're both
   dark and within a rust-adjacent hue from refraction. Spot-check
   condensation-heavy panels specifically.
+- **Near-black oxide on wet steel is not separable from shadow** on phone
+  captures -- see v2.1. Report those levels as lower bounds.
 
 ## Diagnostic overlay (when the reported % looks off vs. the visual impression)
 
@@ -856,6 +1016,17 @@ gap between "measured %" and "looks like more" is real signal being
 excluded by the threshold vs. how much is just perceptual (see next
 section).
 
+Show the diagnostic in the conversation. It is a working file, not a
+deliverable -- do not leave it in the user's folders.
+
+**When the user disputes a number, go to measurement, not reassurance and not
+a threshold nudge.** The sequence that has worked every time: locate the region
+they mean, measure its populations (warm bias, brightness, hue, saturation)
+against that panel's confirmed rust and clean field AND against another
+panel's, build the candidate fix, RENDER it, and show them both. A change that
+improves a scalar score and fails on render has happened more than once in this
+skill's history.
+
 ## Perceptual sanity check (mottled color area looks bigger than it is)
 
 Scattered/mottled red against gray is a well-known perceptual effect --
@@ -876,7 +1047,35 @@ numbers directly -- search past conversations for the prior methodology if
 it's not in the current session. If versions differ, note it and consider
 reprocessing one side with the other's classifier for a clean comparison.
 
+The same applies to **capture setup**. The steel and cast-iron classifiers use
+absolute cutoffs measured off one known-clean specimen under one lighting rig;
+AN26_0112 showed a batch-to-batch gradient change large enough to invert a
+classifier's behaviour. Percentages are not comparable across capture setups
+any more than across classifier versions.
+
 ## History / rationale (context if asked, not required reading to run this)
+
+- **Deck-only delivery and the deck-size rule set at skill_version 2.12**
+  (AN26_0112, 16 Sep 2026). A run delivered the deck plus 24 overlay PNGs and
+  four JSON files into the user's notebook folder; the user asked for the deck
+  alone, consistently, going forward. Recorded at the top of this file rather
+  than buried in the workflow because it governs every run. The paired size
+  rule exists because "deck only" is empty if the deck cannot be delivered: the
+  canonical full-resolution deck for that 24-panel batch was 142 MB, over both
+  the chat and file-transfer limits, and 28% downscaling brought it to 17 MB
+  with no visible loss at display size.
+
+- **v2.1 added at skill_version 2.12** (AN26_0112, 24 wet steel Q-panels,
+  B117 24 h). The operator reported two failures in one message -- droplets
+  being flagged on 2A and dark rust being missed on 4B -- which turned out to
+  be one cause: v2.0's global brightness reference cannot serve a panel whose
+  top is 2-3x darker than its bottom. See the v2.1 section for the
+  measurements, for the two further fixes that were built and rejected on
+  render, and for why the residual near-black undercount is a capture
+  limitation rather than a tuning one. Also at 2.12: `SET_GROUPS` /
+  `GROUP_SUFFIX` for splitting grouped slides by a meaningful boundary, and the
+  description-length rule (a 40-character description overflows the column
+  header and clips).
 
 - **v2.0, the wet-steel substrate warning and the significance-slide sample-size
   fix added at skill_version 2.11** (AN26_0111, 12 wet steel Q-panels, B117
@@ -1090,7 +1289,8 @@ reprocessing one side with the other's classifier for a clean comparison.
   slide back in the deck (in addition to, not instead of, the chat
   report). Implemented in `buildSummarySlide` in
   `build_deck_template.js`, added as the last slide after all grouped
-  slides.
+  slides. **The "in addition to" half of this was reversed at
+  2.12** -- the table now lives only on the slide.
 - **Persistence failures (recurring, see warning at top of this file)**:
   this skill's four files have independently reverted to stale versions
   across sessions at least four times as of the most recent full

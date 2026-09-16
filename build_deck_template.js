@@ -1,5 +1,5 @@
 /*
- * panel-rust-analysis skill_version: 2.11 -- must match SKILL.md's
+ * panel-rust-analysis skill_version: 2.12 -- must match SKILL.md's
  * skill_version, the repo copy, and the panel-rust-analysis line in
  * PROJECT_CANON.md. If it is out of sync with any of those, this file has
  * reverted to a stale snapshot: run from the repo clone instead of this
@@ -56,6 +56,15 @@ const path = require("path");
 // ---- EDIT THESE FOR THE CURRENT BATCH ----
 const PROJECT = "AN26_0409";
 const SETS = ["9B", "9D", "10B", "10D"]; // per-set slide order
+// Force the grouped slides to split on a meaningful boundary (two substrates,
+// two dry-down times) instead of letting chunkForWidth pack by width alone --
+// a reader should not be comparing across a boundary that matters. Each inner
+// list is laid out as its own chunk. Leave [] for stock width packing.
+const SET_GROUPS = [];
+// Text appended to the grouped-slide title for the chunk STARTING with this
+// label, e.g. {"2A": "R-35", "2B": "QD-35"}, so the boundary is named on the
+// slide itself. Leave {} to omit.
+const GROUP_SUFFIX = {};
 const TIMEPOINT = "24h";
 // Specimen noun. "Panel" for Q-panels, "Coupon" for round/machined coupons.
 // Used for image captions, grouped-slide titles and summary column headers.
@@ -462,8 +471,10 @@ if (LAYOUT === "blocks") {
   buildBlockSlide(`All Sets \u2014 ${TIMEPOINT} \u2014 Straightened ${SPECIMEN}s`, SETS, "straight");
   buildBlockSlide(`All Sets \u2014 ${TIMEPOINT} \u2014 Rust Overlay`, SETS, "overlay");
 } else {
-  for (const chunk of chunkForWidth(SETS)) {
-    const rangeLabel = chunk.length > 1 ? `${chunk[0]}\u2013${chunk[chunk.length - 1]}` : chunk[0];
+  const groups = SET_GROUPS.length > 0 ? SET_GROUPS : [SETS];
+  for (const chunk of groups.flatMap(chunkForWidth)) {
+    const suffix = GROUP_SUFFIX[chunk[0]] ? ` (${GROUP_SUFFIX[chunk[0]]})` : "";
+    const rangeLabel = (chunk.length > 1 ? `${chunk[0]}\u2013${chunk[chunk.length - 1]}` : chunk[0]) + suffix;
     buildGroupedSlide(`All Sets \u2014 ${rangeLabel} \u2014 ${TIMEPOINT} \u2014 Straightened ${SPECIMEN}s`, chunk, "straight");
     buildGroupedSlide(`All Sets \u2014 ${rangeLabel} \u2014 ${TIMEPOINT} \u2014 Rust Overlay`, chunk, "overlay");
   }

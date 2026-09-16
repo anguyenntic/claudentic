@@ -1,4 +1,4 @@
-# panel-rust-analysis skill_version: 2.11 -- must match SKILL.md's
+# panel-rust-analysis skill_version: 2.12 -- must match SKILL.md's
 # skill_version, the repo copy, and the panel-rust-analysis line in
 # PROJECT_CANON.md. If it is out of sync with any of those, this file has
 # reverted to a stale snapshot: run from the repo clone instead of this
@@ -539,6 +539,131 @@ def classify_rust_v20(rgba, dark_frac=0.62, return_parts=False):
     if return_parts:
         return grown, pct, pm, confirmed, cand
     return grown, pct, pm
+
+def local_brightness_ref(V, pm, radius=150, pct=60, ds=4):
+    """Local `pct`th percentile of V over a disk of `radius` px.
+
+    The background estimate used by classify_rust_v21. Computed on a
+    downscaled copy and resampled up: a background estimate wants to be
+    smooth, so the interpolation costs nothing real and the percentile
+    filter on a 3000x1800 panel would otherwise dominate runtime. Pixels
+    outside the panel are filled with the panel median first, so the filter
+    is not dragged down at the specimen edge.
+    """
+    from scipy import ndimage as ndi
+    fill = float(np.median(V[pm])) if pm.any() else 0.0
+    W = np.where(pm, V, fill)
+    small = W[::ds, ::ds]
+    r = max(1, int(round(radius / ds)))
+    y, x = np.ogrid[-r:r + 1, -r:r + 1]
+    disk = (x * x + y * y) <= r * r
+    ref_s = ndi.percentile_filter(small, pct, footprint=disk, mode='nearest')
+    ref = ndi.zoom(ref_s, (V.shape[0] / ref_s.shape[0],
+                           V.shape[1] / ref_s.shape[1]), order=1)
+    if ref.shape != V.shape:
+        out = np.full(V.shape, fill, np.float32)
+        h = min(ref.shape[0], V.shape[0]); w = min(ref.shape[1], V.shape[1])
+        out[:h, :w] = ref[:h, :w]
+        ref = out
+    return ref
+
+
+def classify_rust_v21(rgba, dark_frac=0.62, radius=150, pct=60,
+                      return_parts=False):
+    """v2.1: v2.0 with a LOCAL brightness reference instead of the panel median.
+
+    Selected explicitly via CLASSIFIER = "v2.1". Never auto-routed, for the
+    same reason as v1.9 and v2.0: it depends on facts about the photography.
+
+    Identical to v2.0 except the reference `dark_frac` is taken against --
+    the local 60th percentile of brightness over a 150 px disk rather than
+    the median of the whole panel. dark_frac and the connectivity gate are
+    unchanged.
+
+    WHY (measured, AN26_0112, 24 wet steel Q-panels, B117 24 h; the operator
+    reported BOTH failures in one message and they share one cause):
+
+    This batch's panels carry a far steeper top-to-bottom brightness gradient
+    than AN26_0111's, which v2.0 was calibrated on:
+
+        top rows    median brightness 66-95
+        bottom rows median brightness 188-211      -> a 2-3x ratio
+
+    Against a global median of ~129 the v2.0 cutoff lands at ~80. That is
+    inside the clean grey UPPER field, and far below anything in the bright
+    LOWER field, so one cutoff fails in both directions at once: it flags
+    clean dark metal at the top and cannot reach genuine dark oxide at the
+    bottom.
+
+    The decisive measurement, on 2A panel 1, using warm bias
+    100*(R-B)/(R+G+B):
+
+        confirmed rust          +15.7
+        clean field              +1.5
+        what v2.0 ADDED          +0.0     <- colder than clean metal
+
+    i.e. v2.0's addition there was shadow, not corrosion, and it was worth
+    11.1 pp on that panel. Under v2.1 the added region measures +3.8, warmer
+    than the clean field, and the blob is gone on render.
+
+    Effect on that batch (set means, v2.0 -> v2.1):
+        2A 10.5 -> 7.0    3A  5.4 -> 5.3    4A 35.3 -> 36.6   5A 33.8 -> 34.7
+        2B  5.3 -> 5.8    3B  5.0 -> 4.8    4B 34.2 -> 35.1   5B 39.1 -> 40.3
+    Rankings and conclusions were unchanged, but the largest apparent
+    difference in the experiment (2A vs 3A, +5.1 pp) was mostly artifact and
+    fell to +1.7 pp.
+
+    THE CONNECTIVITY GATE IS LOAD-BEARING, as in v1.5 and v2.0. Do not
+    remove it.
+
+    KNOWN LIMITATION -- near-black oxide is still undercounted, and this is a
+    CAPTURE limitation, not a tuning one. Two further fixes were built on
+    this batch and both were rejected ON RENDER:
+
+      - a warm-bias recovery pass (warm > 6, sat > 0.12, rust hue,
+        connectivity-gated) recovers thin bleed but not the near-black band,
+        and it picks up droplet shadow;
+      - a relaxed darkness cutoff (0.78-0.92) with a minimum-component-size
+        gate does reach the band, and at the same settings paints a
+        full-height stripe down both edges of the near-clean guard panels.
+
+    The reason no threshold works, so nobody re-derives it: in the missed
+    band warm bias is +3.0 while that panel's clean field is +1.4 -- but a
+    NEAR-CLEAN panel's clean field measures +3.3, higher than the rusted
+    panel's band. There is no colour threshold that separates them ACROSS
+    panels. At brightness 50-90 on an 8-bit phone HEIC with per-scene tone
+    mapping the chroma is simply gone, and black oxide and shadow occupy the
+    same place in every colour space available.
+
+    So report those levels as LOWER BOUNDS and put it on the test-conditions
+    slide. The fixes are photographic: shoot straight down from a fixed
+    height with even lighting; dry a sacrificial panel at a later timepoint
+    as a calibration reference; or have the operator annotate one known-oxide
+    and one known-shadow region and fit the cutoffs to that ground truth.
+
+    v2.1 numbers are NOT comparable with v2.0, v1.9 or any other version.
+    """
+    from skimage.morphology import reconstruction
+
+    confirmed, _pct, pm = classify_rust_v19(rgba)
+    V = rgba[..., :3].astype(np.float32).sum(axis=2) / 3.0
+    ref = local_brightness_ref(V, pm, radius=radius, pct=pct)
+    cand = pm & ~confirmed & (V < dark_frac * np.maximum(ref, 1))
+
+    seed = np.zeros(V.shape, np.float32)
+    mask_img = np.zeros(V.shape, np.float32)
+    seed[confirmed] = 1.0
+    mask_img[confirmed | cand] = 1.0
+    if mask_img.any() and confirmed.any():
+        grown = reconstruction(seed, mask_img, method='dilation') > 0.5
+    else:
+        grown = confirmed.copy()
+    grown &= pm
+    pct_out = 100.0 * grown.sum() / max(pm.sum(), 1)
+    if return_parts:
+        return grown, pct_out, pm, confirmed, cand
+    return grown, pct_out, pm
+
 
 def bare_fraction(rgba, sat_max=BARE_SAT_MAX, val_min=BARE_VAL_MIN):
     """Fraction of the panel matching the clean bare-metal signature.
