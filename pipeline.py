@@ -1,4 +1,4 @@
-# panel-rust-analysis skill_version: 2.12 -- must match SKILL.md's
+# panel-rust-analysis skill_version: 2.13 -- must match SKILL.md's
 # skill_version, the repo copy, and the panel-rust-analysis line in
 # PROJECT_CANON.md. If it is out of sync with any of those, this file has
 # reverted to a stale snapshot: run from the repo clone instead of this
@@ -663,6 +663,186 @@ def classify_rust_v21(rgba, dark_frac=0.62, radius=150, pct=60,
     if return_parts:
         return grown, pct_out, pm, confirmed, cand
     return grown, pct_out, pm
+
+
+SPECK_HUE_LO = 8.0
+SPECK_HUE_HI = 60.0
+SPECK_SAT_MIN = 0.17
+SPECK_MIN_AREA = 60
+SPECK_SPEC_V_MAX = 230.0
+
+
+def classify_rust_v22(rgba, sat_min=SPECK_SAT_MIN, min_area=SPECK_MIN_AREA,
+                      hue_lo=SPECK_HUE_LO, hue_hi=SPECK_HUE_HI,
+                      spec_v_max=SPECK_SPEC_V_MAX, return_parts=False):
+    """v2.2: v2.1 plus recovery of DISCRETE LIGHT-TAN SPECKS at early timepoints.
+
+    Selected explicitly via CLASSIFIER = "v2.2". Never auto-routed, for the
+    same reason as v1.9, v2.0 and v2.1.
+
+    WHY (measured, AN26_0112 sets E/F, 12 wet steel Q-panels, B117 4 h, with
+    the operator marking ground truth on three of them):
+
+    At an early timepoint the corrosion present is not a field, a streak or a
+    dark band -- it is a scatter of small light-tan specks. v2.1 reaches none
+    of them, and neither of its two paths can:
+
+      - the v1.9 base floors saturation at 0.28, and these specks sit at
+        0.13-0.29 with a median around 0.18;
+      - the darkness-recovery pass only looks DOWNWARD in brightness, and
+        these specks are BRIGHTER than the surrounding field (V 119-158
+        against a field at 102-113).
+
+    So the panels read 0.15-0.76% against an operator who could see specks
+    all over them.
+
+    GROUND TRUTH. The operator marked 135 specks across three 4E panels in
+    pure green and one 322,000 px region he declared clean in pure magenta.
+    Measured on the ORIGINAL pixels under those marks:
+
+        population                     hue   sat p50   warm bias   V p50
+        speck cores (declared rust)    34-36  0.286      +11.0     115
+        whole speck dabs               34-38  0.204       +7.4     120
+        declared-clean region             70  0.063       +1.7      98
+                                              (p90 0.094)
+
+    Two separated populations, so a cutoff exists. It was chosen by sweeping
+    saturation, a warm-bias gate and a minimum component area against those
+    marks, scored as (specks hit / specks marked) and (% of the declared-clean
+    region flagged):
+
+        sat   area   specks hit   clean region flagged
+        0.12    60     94/135          0.000%   (needs warm>6 to reach 0)
+        0.14    60    104/135          0.025%
+        0.16    60     96/135          0.000%
+        0.17    60    ~90/135          0.000%   <- ADOPTED, see below
+        0.18    60     84/135          0.000%
+
+    0.14 was adopted first, as the knee against the operator's single clean
+    region. IT WAS TOO LOW, and a SECOND round of operator marking is what
+    showed it. He circled two mid-panel regions on 4E panels 1 and 2 and said
+    the specks there were not rust. Those regions are darker and warmer than
+    the clean field he had marked earlier (unflagged metal there measures sat
+    0.100-0.104 and warm +3.5 against 0.063 and +1.7 in the first clean
+    region), so the 0.14 floor sat inside their noise. Measured on the 102
+    blobs wholly inside those circles against the 99 blobs touching his green
+    speck marks:
+
+        gate                     marked specks kept   circled blobs kept
+        sat >= 0.14 (as adopted)        99/99               102/102
+        sat >= 0.16                     71/99                 6/102
+        sat >= 0.17                     70/99                 6/102
+        sat >= 0.17 AND V/localref
+                         >= 0.75        58/99                 2/102
+
+    0.17 rejects 96 of the 102 blobs the operator declared not-rust while
+    keeping 70 of the 99 he declared rust. A local-brightness ratio gate was
+    tested alongside it (these false positives sit at 0.71x the local
+    brightness reference against 0.88x for real specks) and is NOT used: it
+    removes 12 more real specks to reject 4 more false ones. A warm-bias gate
+    is likewise not used -- the two populations measure +5.8 and +6.5, too
+    close to separate.
+
+    THE RECALL COST IS REAL AND DELIBERATE: about 30% of the operator's
+    marked specks are now missed rather than about 23%. Values are lower
+    bounds, and the reason to accept that is that a false positive which
+    appears on every panel of a set is worse than a miss -- see the note on
+    RSD below.
+
+    THE SPECULAR GATE (spec_v_max, default 230 of 255) is what separates a
+    speck from a WATER DROPLET, and it was added after the operator reported
+    that the first version of this pass "just has some water speckles now".
+    Refraction at a droplet's rim puts a warm tint inside the rust hue window
+    at exactly the saturation these specks live at, so colour cannot separate
+    them: measured on 4E, the droplet blobs read sat 0.164-0.190 at warm bias
+    +5.9 to +6.9 against the operator's own specks at 0.183-0.206 and +6.6 to
+    +7.5. Shape barely separates them either (blob solidity p50 0.49 against
+    0.57). What does separate them is that a droplet is a LENS: it carries a
+    near-white specular highlight, and a rust speck never does. Rejecting any
+    blob containing a pixel above 230 removed 0.33 pp from 4E -- the drip-line
+    droplet cluster, confirmed on render -- while keeping ALL 104 of the
+    operator's marked specks that the pass had found. Raising the minimum area
+    instead was tested and is worse: area >= 130 removes only 0.24 pp and
+    costs 10 real specks, because the two populations overlap in size
+    (droplet blobs p50 92 px, real specks p50 157 px).
+
+    THE MINIMUM AREA IS LOAD-BEARING, and it replaces the connectivity gate
+    rather than adding to it. These specks are isolated from any confirmed
+    rust, so morphological reconstruction from the confirmed mask -- the gate
+    v1.5, v2.0 and v2.1 rely on -- would delete every one of them. What keeps
+    the low saturation floor honest here is that a real speck is a COMPACT
+    BLOB of 60 px or more, where the residual noise in the clean field is
+    single pixels and 2-3 px specules. Without the area gate the same floor
+    paints a diffuse mesh across a warm-toned region of 4E panel 2 that the
+    operator explicitly marked as clean.
+
+    EFFECT on that batch (set means, whole panel), across the three states
+    this classifier passed through in one session:
+
+        set   v2.1   v2.2 sat 0.14   v2.2 sat 0.14      v2.2 AS SHIPPED
+                     no droplet gate  + droplet gate   (sat 0.17 + gate)
+        4E    0.48       2.64             2.15               1.77
+        5E    0.25       1.18             1.09               1.00
+        4F    0.08       0.62             0.58               0.51
+        5F    0.08       0.55             0.55               0.51
+
+    A WARNING FROM THAT TABLE. The middle column had a 3% replicate RSD on 4E
+    and gave 4E vs 5E at p = 0.002; the shipped column has ~15% RSD and
+    p ~ 0.14. The apparent precision came from false positives that appeared
+    on every panel of the set. A SYSTEMATIC FALSE POSITIVE IS EXACTLY AS
+    REPRODUCIBLE AS A REAL SIGNAL -- do not read a tight RSD as evidence that
+    a classifier is correct, and do not report significance from a classifier
+    that has not been checked against operator marks on the specific
+    population driving it.
+
+    KNOWN LIMITATIONS -- state both when reporting v2.2 numbers:
+
+      - Droplets whose highlight is dimmer than 230 are still counted. The
+        gate is deliberately set at near-white so it cannot eat a bright rust
+        speck; it is not a complete droplet filter.
+      - About 1 in 4 of the operator's marked specks is still missed, the
+        faintest ones (one panel's speck cores measured sat p50 0.133, below
+        the floor). v2.2 numbers are lower bounds.
+      - Edge bands are counted. The pass flags a stripe down the sheared
+        panel edge on every panel including near-clean ones, worth 0.1-1.7 pp.
+        On this batch the operator judged that real edge corrosion and chose
+        to count it. That is a JUDGEMENT about the specimens, not a
+        measurement -- a sheared edge in shadow is not separable from edge
+        oxide on a wet panel. Report the edge contribution separately.
+      - v2.1's near-black oxide undercount is inherited unchanged.
+
+    RE-CALIBRATE against fresh operator marks if lighting, camera or
+    timepoint changes materially. These cutoffs come from one batch at one
+    early timepoint, where the corrosion happens to be discrete specks; on a
+    heavily corroded panel the speck model does not describe the corrosion
+    and v2.1 is the right method.
+
+    v2.2 numbers are NOT comparable with v2.1, v2.0, v1.9 or any other
+    version.
+    """
+    grown, _pct, pm = classify_rust_v21(rgba)
+    hue, sat, _val = hsv_channels(rgba[..., :3])
+    cand = pm & (hue >= hue_lo) & (hue <= hue_hi) & (sat > sat_min) & ~grown
+
+    V255 = hsv_channels(rgba[..., :3])[2] * 255.0
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(
+        cand.astype(np.uint8), 8)
+    specks = np.zeros_like(cand)
+    for j in range(1, n):
+        if stats[j, cv2.CC_STAT_AREA] < min_area:
+            continue
+        blob = lab == j
+        # SPECULAR GATE: a water droplet carries a near-white highlight;
+        # a rust speck does not. See the docstring.
+        if spec_v_max and V255[blob].max() > spec_v_max:
+            continue
+        specks[blob] = True
+
+    out = (grown | specks) & pm
+    pct_out = 100.0 * out.sum() / max(pm.sum(), 1)
+    if return_parts:
+        return out, pct_out, pm, grown, specks
+    return out, pct_out, pm
 
 
 def bare_fraction(rgba, sat_max=BARE_SAT_MAX, val_min=BARE_VAL_MIN):

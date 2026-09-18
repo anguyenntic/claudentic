@@ -1,5 +1,5 @@
 /*
- * panel-rust-analysis skill_version: 2.12 -- must match SKILL.md's
+ * panel-rust-analysis skill_version: 2.13 -- must match SKILL.md's
  * skill_version, the repo copy, and the panel-rust-analysis line in
  * PROJECT_CANON.md. If it is out of sync with any of those, this file has
  * reverted to a stale snapshot: run from the repo clone instead of this

@@ -1,10 +1,10 @@
 ---
 name: panel-rust-analysis
 description: "Full pipeline for corrosion/rust test specimen photos -- flat panels (Q-panels) AND round or machined coupons, on steel or cast iron: straighten each specimen, orient any mounting hole to the top, classify rust pixels, generate rust-overlay images, and assemble everything into a PowerPoint deck. Use this whenever the user uploads transparent-background (RGBA, pre-background-removed) panel or coupon photos -- each containing 1-3 specimens side by side -- and asks to run the 'usual' analysis, 'panel straighten and rust analysis', a coupon or button rust analysis, 'do it the same as before', or similar. Also use for follow-up requests on an existing batch: reorienting panels, adjusting the rust-classification threshold, building a diagnostic overlay to sanity-check the % against a visual impression, or re-running with a different classifier. If the input images still have their original background (not yet transparent), use the panel-bg-removal skill first."
-skill_version: "2.12"
+skill_version: "2.13"
 ---
 
-**Installed skill_version: 2.12** -- this marker is duplicated in the BODY
+**Installed skill_version: 2.13** -- this marker is duplicated in the BODY
 because when this skill is saved through a proposal card the frontmatter is
 rewritten and only `name` and `description` survive it. If the frontmatter has
 no `skill_version`, read this line.
@@ -854,6 +854,82 @@ report those levels as lower bounds. The fixes are photographic:
 
 **v2.1 numbers are NOT comparable with v2.0, v1.9 or any other version.**
 
+### v2.2 (`classify_rust_v22`) -- EARLY timepoints: discrete light-tan specks
+
+**Selected explicitly via `CLASSIFIER = "v2.2"`. Never auto-routed**, like
+v1.9, v2.0 and v2.1.
+
+v2.1 base, plus a pass that recovers **compact rust-hued blobs** the
+saturation floors exclude: hue 8-60 deg, `sat > 0.14`, connected component
+**>= 60 px**. No connectivity gate (see below).
+
+Why it exists (measured, AN26_0112 sets E/F, 12 wet steel Q-panels, B117
+**4 h**, with the operator marking ground truth on three of them). At an early
+timepoint the corrosion is not a field, a streak or a dark band -- it is a
+scatter of small light-tan specks, and **neither of v2.1's paths can reach
+them**: the v1.9 base floors saturation at 0.28 while the specks sit at
+0.13-0.29, and the darkness-recovery pass only looks downward in brightness
+while the specks are *brighter* than the surrounding field. The panels read
+0.15-0.76% against an operator who could see specks all over them.
+
+**Ground truth.** 135 specks marked in pure green across three 4E panels, plus
+one 322,000 px region marked in pure magenta as clean. Measured on the
+original pixels under those marks:
+
+| population | hue | sat p50 | warm bias | V p50 |
+|---|---|---|---|---|
+| speck cores (declared rust) | 34-36 | **0.286** | +11.0 | 115 |
+| whole speck dabs | 34-38 | 0.204 | +7.4 | 120 |
+| declared-clean region | 70 | **0.063** (p90 0.094) | +1.7 | 98 |
+
+**Cutoff selection**, swept against those marks and scored as specks hit
+against fraction of the declared-clean region flagged:
+
+| sat | min area | specks hit | clean region flagged |
+|---|---|---|---|
+| 0.12 | 60 | 94/135 | 0.000% (only with warm > 6) |
+| **0.14** | **60** | **104/135** | **0.025%** |
+| 0.16 | 60 | 96/135 | 0.000% |
+| 0.18 | 60 | 84/135 | 0.000% |
+
+0.14 is the knee -- 8 more of the operator's specks than 0.16, for 80 false
+pixels out of 322,000. A warm-bias gate was tested and **is not used**: at
+sat >= 0.14 it removes real specks and removes nothing from the clean region.
+
+**The minimum area is load-bearing, and it REPLACES the connectivity gate
+rather than adding to it.** These specks are isolated from any confirmed rust,
+so the morphological reconstruction v1.5/v2.0/v2.1 rely on would delete every
+one of them. What keeps the low floor honest is that a real speck is a compact
+blob while the residual noise in the clean field is single pixels. Without the
+area gate the same floor paints a diffuse mesh across a warm-toned region of
+4E panel 2 -- the exact region the operator marked clean.
+
+**Effect on that batch** (set means, v2.1 -> v2.2, whole panel): 4E
+0.48 -> 2.64, 5E 0.25 -> 1.18, 4F 0.08 -> 0.62, 5F 0.08 -> 0.56. Replicate
+scatter improves at the same time (4E from 50% RSD to 3%), which is the
+signature of a measure that has stopped depending on which few specks cleared
+the old floor.
+
+**Known limitations -- state both when reporting v2.2 numbers:**
+
+- **About 1 in 4 of the marked specks is still missed**, the faintest ones
+  (one panel's speck cores measured sat p50 0.133). v2.2 numbers are lower
+  bounds.
+- **Edge bands are counted.** The pass flags a stripe down the sheared panel
+  edge on every panel including near-clean ones, worth 0.1-1.7 pp. On this
+  batch the operator judged that real edge corrosion and chose to count it.
+  That is a judgement about the specimens, not a measurement -- a sheared edge
+  in shadow is not separable from edge oxide on a wet panel. **Report the edge
+  contribution separately** so the judgement stays visible.
+- v2.1's near-black oxide undercount is inherited unchanged.
+
+**Re-calibrate against fresh operator marks if lighting, camera or timepoint
+changes materially.** These cutoffs come from one early timepoint where the
+corrosion happens to be discrete specks. On a heavily corroded panel the speck
+model does not describe the corrosion and v2.1 is the right method.
+
+**v2.2 numbers are NOT comparable with v2.1 or any other version.**
+
 ### v1.9 (`classify_rust_v19`) -- steel photographed WET
 
 **Selected explicitly via `CLASSIFIER = "v1.9"`. Never auto-routed** --
@@ -1054,6 +1130,24 @@ classifier's behaviour. Percentages are not comparable across capture setups
 any more than across classifier versions.
 
 ## History / rationale (context if asked, not required reading to run this)
+
+- **v2.2 added at skill_version 2.13** (AN26_0112 sets E/F, 12 wet steel
+  Q-panels, B117 **4 h**). The operator reported unmarked brown specks at the
+  top of the 4E and 5E panels. A first diagnostic dismissed them -- it measured
+  the dark crust at the extreme panel edge rather than the speck population
+  across the top field, found it worth under 0.1 pp, and reported the numbers
+  as sound. The operator repeated the observation, which is what forced the
+  right measurement. **When an operator repeats an observation after being
+  told the numbers are fine, the measurement was aimed at the wrong
+  population** -- re-derive what they are actually pointing at before
+  answering again.
+  Then, rather than sweeping thresholds, the operator was asked to mark ground
+  truth: 135 specks in green and one large clean region in magenta on
+  full-resolution panels. Those marks both set the cutoff and killed a
+  candidate rule -- the region he marked clean was exactly the region a looser
+  saturation floor had painted as a diffuse mesh. See the v2.2 section. Also
+  recorded there: the minimum-area gate substitutes for the connectivity gate,
+  which cannot be used on isolated specks.
 
 - **Deck-only delivery and the deck-size rule set at skill_version 2.12**
   (AN26_0112, 16 Sep 2026). A run delivered the deck plus 24 overlay PNGs and
